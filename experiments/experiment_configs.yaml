@@ -1,0 +1,33 @@
+dataset: "camelyon16"
+patch_size: [224, 224]
+num_patches_per_bag: 100
+train_split: 0.8
+val_split: 0.1
+test_split: 0.1
+
+model:
+  type: "CNN"
+  encoder:
+    architecture: "ResNet50"
+    pretrained: true
+    dropout_rate: 0.5
+
+pooling:
+  method: "attention"  # Options: "mean", "attention"
+  attention_heads: 8
+
+training:
+  batch_size: 32
+  learning_rate: 0.001
+  num_epochs: 50
+  weight_decay: 1e-4
+  early_stopping: true
+  patience: 5
+
+uncertainty_estimation:
+  method: "monte_carlo_dropout"  # Options: "softmax_thresholding", "monte_carlo_dropout"
+  num_samples: 100
+
+output:
+  model_save_path: "models/mil_model.pth"
+  metrics_save_path: "results/metrics.json"
