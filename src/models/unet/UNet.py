@@ -3,9 +3,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision.transforms import transforms
 from torchvision.transforms.functional import center_crop
-from BaseModel import BaseModel
+from .BaseModel import BaseModel
 
 class UNet(BaseModel):
+    """
+    U-Net model implementation for image segmentation and classification.
+
+    Parameters:
+    - batch_size: int, batch size for training.
+    - learning_rate: float, learning rate for the optimizer.
+    - num_epochs: int, number of epochs for training.
+    - dataset_name: str, name of the dataset.
+
+    Returns:
+    - None: Initializes the U-Net model.
+    """
     def __init__(self, batch_size=128, learning_rate=0.001, num_epochs=50, dataset_name="imagenet"):
         super().__init__(batch_size, learning_rate, num_epochs, dataset_name=dataset_name)
         self.dataset_name = dataset_name
@@ -17,7 +29,13 @@ class UNet(BaseModel):
 
     def build_model(self):
         """
-        Build the U-Net model. Reference paper: https://arxiv.org/abs/1505.04597
+        Build the U-Net model architecture.
+
+        Parameters:
+        - None
+
+        Returns:
+        - None: Constructs the encoder, bottleneck, decoder, and final layers.
         """
         class UNetModel(nn.Module):
             def __init__(self):
@@ -99,6 +117,12 @@ class UNet(BaseModel):
     def get_transforms(self, is_train=True) -> transforms.Compose:
         """
         Get the data transformations for the Tiny ImageNet dataset.
+
+        Parameters:
+        - is_train: bool, whether the transformations are for training or testing.
+
+        Returns:
+        - transforms.Compose: Composed transformations for the dataset.
         """
         return transforms.Compose([
             transforms.Resize((64, 64)),
@@ -109,6 +133,12 @@ class UNet(BaseModel):
     def train(self):
         """
         Train the U-Net model.
+
+        Parameters:
+        - None
+
+        Returns:
+        - None: Updates model weights during training.
         """
         self.net.train()
         for epoch in range(self.num_epochs):
@@ -141,6 +171,13 @@ class UNet(BaseModel):
     def test(self):
         """
         Test the U-Net model.
+
+        Parameters:
+        - None
+
+        Returns:
+        - avg_loss: float, average loss on the test set.
+        - accuracy: float, accuracy on the test set.
         """
         self.net.eval()
         test_loss = 0.0

@@ -1,4 +1,4 @@
-# Import required libraries
+# CREATE WSI HEATMAP VISUALIZATION
 import openslide  # For reading whole-slide images (WSI)
 import torch
 from PIL import Image  # Image processing
