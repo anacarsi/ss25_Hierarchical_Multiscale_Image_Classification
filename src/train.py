@@ -3,20 +3,25 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from src.dataset.camelyon16_mil_dataset import Camelyon16MILDataset
+from src.preprocessing.camelyon16_mil_dataset import Camelyon16MILDataset
 from src.models.cnn_encoder import CNNEncoder
 from src.models.mil_classifier import MILClassifier
 from src.models.mil_pooling import MeanPooling, AttentionPooling
-from src.utils.uncertainty import estimate_uncertainty
-from src.utils.metrics import calculate_metrics
 from src.config import Config
 
 def train_model():
-    # Load dataset
+    """
+    Train the MILClassifier model on the Camelyon dataset.
+
+    Parameters:
+    - None
+
+    Returns:
+    - None: Saves model checkpoints during training.
+    """
     train_dataset = Camelyon16MILDataset(data_dir=Config.DATA_DIR, mode='train')
     train_loader = DataLoader(train_dataset, batch_size=Config.BATCH_SIZE, shuffle=True)
 
-    # Initialize model, loss function, and optimizer
     encoder = CNNEncoder()
     pooling = MeanPooling() if Config.USE_MEAN_POOLING else AttentionPooling()
     classifier = MILClassifier(encoder, pooling)
@@ -24,7 +29,6 @@ def train_model():
     criterion = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(classifier.parameters(), lr=Config.LEARNING_RATE)
 
-    # Training loop
     classifier.train()
     for epoch in range(Config.EPOCHS):
         total_loss = 0

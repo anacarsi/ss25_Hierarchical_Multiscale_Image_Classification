@@ -1,8 +1,18 @@
 # Configuration settings for the WSI MIL CAMELYON16 project
 
 import os
+import torch
 
 class Config:
+    """
+    Configuration settings for the CAMELYON16 project.
+
+    Parameters:
+    - None
+
+    Returns:
+    - None: Provides static configuration values for the project.
+    """
     # Dataset paths
     DATASET_PATH = os.path.join('data', 'camelyon16')
     PATCHES_PATH = os.path.join('data', 'preprocessing', 'patches')
@@ -22,7 +32,7 @@ class Config:
     MONTE_CARLO_SAMPLES = 100  # Number of samples for Monte Carlo Dropout
 
     # Device configuration
-    DEVICE = 'cuda' if os.cuda.is_available() else 'cpu'
+    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 
     # Logging and saving
     LOG_DIR = 'logs'
@@ -31,6 +41,15 @@ class Config:
 
     @staticmethod
     def print_config():
+        """
+        Print the configuration settings.
+
+        Parameters:
+        - None
+
+        Returns:
+        - None: Prints all configuration values to the console.
+        """
         print("Configuration:")
         for key, value in vars(Config).items():
             if not key.startswith('__'):
