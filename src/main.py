@@ -103,7 +103,6 @@ def prepare_data():
     Prepare data for training (e.g., preprocessing or augmentation).
     """
     print("[INFO] Preparing data...")
-    # Add data preparation logic here
     print("[INFO] Data preparation completed.")
 
 def train_unet():

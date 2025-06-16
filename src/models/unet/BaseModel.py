@@ -1,4 +1,4 @@
-# FoPra IT Sicherheit WS 2024/25
+# OLD, to work with Imagenet Dataset
 # Abstract Class for NN Model (Factory Design Pattern)
 
 from abc import ABC, abstractmethod

@@ -56,7 +56,7 @@ class UNet(BaseModel):
                 self.dec1 = self.upconv_block(128 + 64, 64)
 
                 # Final output for classification
-                self.global_pool = nn.AdaptiveAvgPool2d(1)  # Global average pooling
+                self.global_pool = nn.AdaptiveAvgPool2d(1)  # Global average pooling ----- or before bottleneck?
                 self.fc = nn.Linear(64, 200)  # Fully connected layer for 200 classes
 
             def conv_block(self, in_channels, out_channels):
@@ -96,7 +96,7 @@ class UNet(BaseModel):
                 dec1 = self.crop_and_concat(dec2, enc1)
                 dec1 = self.dec1(dec1)
 
-                # Global average pooling and classification
+                # Global average pooling and classification, not sure...
                 pooled = self.global_pool(dec1)
                 pooled = pooled.view(pooled.size(0), -1)  # Flatten
                 return self.fc(pooled)

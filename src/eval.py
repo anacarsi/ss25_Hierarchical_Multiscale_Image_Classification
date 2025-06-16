@@ -62,6 +62,3 @@ def main():
 
     # metrics = calculate_metrics(predictions, labels)
     # print("Evaluation Metrics:", metrics)
-
-if __name__ == "__main__":
-    main()

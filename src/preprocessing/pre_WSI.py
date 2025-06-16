@@ -1,4 +1,4 @@
-# CREATE WSI HEATMAP VISUALIZATION
+# CREATE WSI HEATMAP VISUALIZATION - TODO: adapt (uni beijing)
 import openslide  # For reading whole-slide images (WSI)
 import torch
 from PIL import Image  # Image processing
@@ -112,21 +112,3 @@ if __name__ == '__main__':
             [0.5, 0.5, 0.5]
         )
     ])
-
-    # Import model architecture
-    from UNet import Unet
-    
-    # Initialize U-Net model (3 input channels, 3 output classes)
-    model = Unet(3, 3).to(device)
-    
-    # Load pre-trained weights
-    model.load_state_dict(torch.load('UNet.pth'))
-    
-    # Set model to evaluation mode
-    model.eval()
-
-    # Load whole-slide image (WSI)
-    image = openslide.OpenSlide('/Camelyon16/test_040.tif')
-    
-    # Process WSI with 512x512 patches
-    val_wsi(image, 512, batch_size=12)
