@@ -15,7 +15,6 @@ def visualize_attention_heatmap(image, attention_weights, save_path=None):
     Returns:
     - None
     """
-    # Normalize attention weights to the range [0, 1]
     attention_weights = torch.nn.functional.softmax(attention_weights.view(-1), dim=0).view(attention_weights.shape)
     attention_weights = attention_weights.detach().cpu().numpy()
     

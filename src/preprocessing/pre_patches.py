@@ -1,4 +1,4 @@
-# Import required libraries
+# TODO: adapt uni beijing
 import torch
 from PIL import Image  # Image processing
 import matplotlib.pyplot as plt  # Plotting and visualization
@@ -29,7 +29,6 @@ def pre2heatmap(img_path, save_path):
         img2 = x_transforms(img).to(device)
         x = img2.unsqueeze(0)  # Add batch dimension
         
-        # Model prediction
         y = model(x)
         predicted = y.cpu().numpy()[0]  # Convert to numpy array
         
@@ -56,32 +55,8 @@ def pre2heatmap(img_path, save_path):
         heatmap = Image.open(f'{save_path}heatmap.png').convert('RGBA')
         heatmap = heatmap.resize(img.size)  # Match sizes
         superimposed_image = Image.blend(img, heatmap, 0.4)  # 40% overlay
-        superimposed_image.save(save_path + img_path.split('/')[-1])  # Save result
+        superimposed_image.save(save_path + img_path.split('/')[-1])  
 
 
 # --- Model Initialization Section ---
-device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")  # Set device
-
-# Load pre-trained U-Net model
-from UNet import Unet
-model = Unet(3, 3).to(device)  # 3-channel input, 3-class output
-model.load_state_dict(torch.load('UNet.pth'))  # Load weights
-model.eval()  # Set to evaluation mode
-
-
-# --- Batch Processing Section ---
-import glob
-from tqdm import tqdm  # Progress bar
-import os
-
-# Configure input/output paths
-patches = 'patch_path/'  # Directory with input images
-num_patches = len(os.listdir(patches))  # Count files to process
-save_to = 'save_path/'  # Output directory
-
-# Process all images in directory
-with tqdm(total=num_patches, desc='Processing', colour='blue') as pbar:
-    for img in glob.glob(patches + '*.png'):  # Find all PNG files
-        pre2heatmap(img, save_to)  # Generate heatmap
-        pbar.update(1)  # Update progress
-    pbar.close()
+device = torch.device("cuda:2" if torch.cuda.is_available() else "cpu")  

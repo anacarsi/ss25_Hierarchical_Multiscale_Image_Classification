@@ -1,3 +1,4 @@
+// Script to adapt image to size
 #include <omp.h>
 #include <vector>
 #include <iostream>
