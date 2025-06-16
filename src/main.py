@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 # TODO: add dll directory for OpenSlide avoiding giving specific path
-os.add_dll_directory(r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin")
+# os.add_dll_directory(r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin")
 from src.preprocessing.camelyon16_mil_dataset import Camelyon16MILDataset
 from src.train import train_model
 from src.eval import evaluate_model
@@ -15,17 +15,17 @@ from src.config import Config
 from src.preprocessing.pre_WSI import val_wsi
 from src.models.unet.UNet import UNet
 import openslide
-# Base URL for the GigaDB dataset
+
+# Base URL for the CAMELYON16 dataset
 BASE_URL = "https://s3.ap-northeast-1.wasabisys.com/gigadb-datasets/live/pub/10.5524/100001_101000/100439/"
 
-# File paths for CAMELYON16 and CAMELYON17
+# File paths for CAMELYON16
 CAMELYON16_FILES = {
-    "normal": [f"CAMELYON16/training/normal/normal_{i:03d}.tif" for i in range(1, 112)],
-    "tumor": [f"CAMELYON16/training/tumor/tumor_{i:03d}.tif" for i in range(1, 112)],
-}
-
-CAMELYON17_FILES = {
-    "center_0": [f"CAMELYON17/training/center_0/patient_{i:03d}.zip" for i in range(0, 50)],
+    "train_normal": [f"CAMELYON16/training/normal/normal_{i:03d}.tif" for i in range(1, 112)],
+    "train_tumor": [f"CAMELYON16/training/tumor/tumor_{i:03d}.tif" for i in range(1, 112)],
+    "test_images": [f"CAMELYON16/testing/images/test_{i:03d}.tif" for i in range(1, 51)],
+    "train_masks": ["CAMELYON16/training/lesion_annotations.zip"],
+    "test_masks": ["CAMELYON16/testing/lesion_annotations.zip"]
 }
 
 def download_file(url, destination_path):
@@ -33,7 +33,7 @@ def download_file(url, destination_path):
     Downloads a file from a URL to a destination path with a progress bar.
     """
     try:
-        print(f"[DEBUG] URL: {url}")
+        print(f"[INFO] Downloading: {url}")
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))
@@ -50,41 +50,61 @@ def download_file(url, destination_path):
         print(f"[ERROR] Failed to download {url}: {e}")
         return False
 
-def download_dataset(data_type, subset, base_dir="./data", remote=False):
+def download_dataset(base_dir="./data", remote=False):
     """
-    Downloads the specified subset of the CAMELYON dataset.
+    Downloads the CAMELYON16 dataset, including training, testing, and mask files.
 
     Parameters:
-        data_type: "CAMELYON16" or "CAMELYON17"
-        subset: "normal", "tumor", or "center_0"
-        base_dir: Directory to save the downloaded files.
-        remote: If True, download all files; if False, download only one file for testing.
+    - base_dir: str, directory to save the downloaded files.
+    - remote: bool, whether to execute on a remote server (download all).
     """
-    os.makedirs(base_dir, exist_ok=True)
+    os.makedirs(os.path.join(base_dir, "camelyon16"), exist_ok=True)
+    train_dir = os.path.join(base_dir, "camelyon16/train")
+    val_dir = os.path.join(base_dir, "camelyon16/val")
+    test_dir = os.path.join(base_dir, "camelyon16/test")
+    os.makedirs(train_dir, exist_ok=True)
+    os.makedirs(val_dir, exist_ok=True)
+    os.makedirs(test_dir, exist_ok=True)
 
-    if data_type == "CAMELYON16":
-        files = CAMELYON16_FILES.get(subset, [])
-    elif data_type == "CAMELYON17":
-        files = CAMELYON17_FILES.get(subset, [])
-    else:
-        print(f"[ERROR] Invalid data type: {data_type}")
-        return
+    # Download training images
+    print("[INFO] Downloading training images...")
+    for category, files in {"normal": CAMELYON16_FILES["train_normal"], "tumor": CAMELYON16_FILES["train_tumor"]}.items():
+        category_dir = os.path.join(train_dir, "img" if category == "normal" else "mask")
+        os.makedirs(category_dir, exist_ok=True)
+        if not remote:
+            files = files[:1]  # For local testing, limit to the first file
+        for file_path in files:
+            destination_path = os.path.join(category_dir, os.path.basename(file_path))
+            if not os.path.exists(destination_path):
+                url = BASE_URL + file_path
+                download_file(url, destination_path)
+            else:
+                print(f"[INFO] File already exists: {destination_path}")
 
-    if not files:
-        print(f"[ERROR] Invalid subset '{subset}' for {data_type}. Available subsets: {list(CAMELYON17_FILES.keys())}")
-        return
+    # Download testing images
+    print("[INFO] Downloading testing images...")
+    test_img_dir = os.path.join(test_dir, "img")
+    os.makedirs(test_img_dir, exist_ok=True)
+    for file_path in CAMELYON16_FILES["test_images"]:
+        destination_path = os.path.join(test_img_dir, os.path.basename(file_path))
+        if not os.path.exists(destination_path):
+            url = BASE_URL + file_path
+            download_file(url, destination_path)
+        else:
+            print(f"[INFO] File already exists: {destination_path}")
 
-    if not remote:
-        # Download only the first file for local testing
-        files = files[:1]
-
-    print(f"[DEBUG] Files to download: {files}")
-    for file_path in files:
-        url = BASE_URL + file_path
-        destination_path = os.path.join(base_dir, os.path.basename(file_path))
-        print(f"[INFO] Downloading {file_path}...")
-        if not download_file(url, destination_path):
-            print(f"[ERROR] Failed to download {file_path}. Skipping.")
+    # Download masks
+    print("[INFO] Downloading masks...")
+    for mask_type, files in {"train_masks": CAMELYON16_FILES["train_masks"], "test_masks": CAMELYON16_FILES["test_masks"]}.items():
+        mask_dir = os.path.join(base_dir, "Camelyon16/masks")
+        os.makedirs(mask_dir, exist_ok=True)
+        for file_path in files:
+            destination_path = os.path.join(mask_dir, os.path.basename(file_path))
+            if not os.path.exists(destination_path):
+                url = BASE_URL + file_path
+                download_file(url, destination_path)
+            else:
+                print(f"[INFO] File already exists: {destination_path}")
 
 def extract_patches(type: str, ):
     """
@@ -98,7 +118,7 @@ def extract_patches(type: str, ):
     val_wsi(image, patch_size, batch_size)
     print("[INFO] Patch extraction completed.")
 
-def prepare_data():
+def prepare_data(): # TODO: WIP
     """
     Prepare data for training (e.g., preprocessing or augmentation).
     """
@@ -140,20 +160,18 @@ def test_unet():
     print("[INFO] U-Net testing completed.")
 
 def main():
-    parser = argparse.ArgumentParser(description="Camelyon Dataset Processing and U-Net Training")
-    parser.add_argument("--remote", action="store_true", help="Execute on server (full dataset)")
-    parser.add_argument("-d", "--download", action="store_true", help="Download dataset")
+    parser = argparse.ArgumentParser(description="Camelyon Dataset Processing")
+    parser.add_argument("--download", action="store_true", help="Download CAMELYON16 dataset")
+    parser.add_argument("--base_dir", type=str, default="./data", help="Base directory for downloaded files")
+    parser.add_argument("--remote", action="store_true", help="Execute on remote server")
     parser.add_argument("-p", "--patch", action="store_true", help="Extract patches")
     parser.add_argument("-prep", "--prepare", action="store_true", help="Prepare data")
     parser.add_argument("-train", "--train", action="store_true", help="Train U-Net model")
     parser.add_argument("-test", "--test", action="store_true", help="Test U-Net model")
-    parser.add_argument("--type", type=str, choices=["CAMELYON16", "CAMELYON17"], required=True, help="Dataset type")
-    parser.add_argument("--subset", type=str, choices=["normal", "tumor", "center_0"], required=True, help="Subset to download") # TODO: from the time being, only one center
-    parser.add_argument("--base_dir", type=str, default="../data", help="Base directory for downloaded files")
     args = parser.parse_args()
 
     if args.download:
-        download_dataset(args.type, args.subset, args.base_dir, remote=args.remote)
+        download_dataset(args.base_dir, args.remote)
     if args.patch:
         extract_patches()
     if args.prepare:

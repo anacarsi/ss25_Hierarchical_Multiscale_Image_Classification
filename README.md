@@ -16,36 +16,45 @@ HiPAC — Hierarchical Patch-based Adaptive Classifier
 
 ## Usage
 
-### 1. Data Preparation
+### 1. Download Dataset
 
-- Place the CAMELYON16 dataset in the `data/camelyon16/` directory.
-- Extract patches from WSIs using:
+- To download the CAMELYON16 dataset:
     ```sh
-    python src/preprocessing/patch_extraction.py
+    python src/main.py --download --base_dir ./data --remote
+    ```
+    - `--remote`: Downloads all files (set to `False` for testing to download only one file).
+
+### 2. Extract Patches
+
+- Extract patches from WSIs: (WIP)
+    ```sh
+    python src/main.py --patch
     ```
 
-### 2. Training
+### 3. Prepare Data
 
-- Configure experiment settings in [`experiments/experiment_configs.yaml`](experiments/experiment_configs.yaml).
-- Start training:
+- Preprocess or augment data: (WIP)
     ```sh
-    python src/train.py
+    python src/main.py --prepare
     ```
 
-### 3. Evaluation
+### 4. Train Model
 
-- Evaluate a trained model:
+- Train the U-Net model: (WIP)
     ```sh
-    python src/eval.py
+    python src/main.py --train
     ```
 
-### 4. Visualization
+### 5. Test Model
 
-- Generate attention heatmaps using [`src/visualization/attention_heatmap.py`](src/visualization/attention_heatmap.py).
+- Test the trained U-Net model:(WIP)
+    ```sh
+    python src/main.py --test
+    ```
 
 ## Configuration
 
-- Modify [`src/config.py`](src/config.py) or [`experiments/experiment_configs.yaml`](experiments/experiment_configs.yaml) to adjust paths, hyperparameters, and experiment settings.
+- Modify [`src/config.py`](src/config.py) to adjust paths, hyperparameters, and experiment settings.
 
 ## Citation
 
