@@ -33,6 +33,7 @@ def download_file(url, destination_path):
     Downloads a file from a URL to a destination path with a progress bar.
     """
     try:
+        print(f"[DEBUG] URL: {url}")
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))
@@ -49,9 +50,10 @@ def download_file(url, destination_path):
         print(f"[ERROR] Failed to download {url}: {e}")
         return False
 
-def download_dataset(data_type, subset, base_dir="../data", remote=False):
+def download_dataset(data_type, subset, base_dir="./data", remote=False):
     """
     Downloads the specified subset of the CAMELYON dataset.
+
     Parameters:
         data_type: "CAMELYON16" or "CAMELYON17"
         subset: "normal", "tumor", or "center_0"
@@ -59,6 +61,7 @@ def download_dataset(data_type, subset, base_dir="../data", remote=False):
         remote: If True, download all files; if False, download only one file for testing.
     """
     os.makedirs(base_dir, exist_ok=True)
+
     if data_type == "CAMELYON16":
         files = CAMELYON16_FILES.get(subset, [])
     elif data_type == "CAMELYON17":
@@ -67,13 +70,15 @@ def download_dataset(data_type, subset, base_dir="../data", remote=False):
         print(f"[ERROR] Invalid data type: {data_type}")
         return
 
+    if not files:
+        print(f"[ERROR] Invalid subset '{subset}' for {data_type}. Available subsets: {list(CAMELYON17_FILES.keys())}")
+        return
+
     if not remote:
         # Download only the first file for local testing
         files = files[:1]
 
-    if base_dir.endswith('/'):
-            base_dir = base_dir[:-1]
-    
+    print(f"[DEBUG] Files to download: {files}")
     for file_path in files:
         url = BASE_URL + file_path
         destination_path = os.path.join(base_dir, os.path.basename(file_path))
