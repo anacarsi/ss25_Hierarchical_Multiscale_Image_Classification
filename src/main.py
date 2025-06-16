@@ -7,7 +7,7 @@ import torch
 from torch.utils.data import DataLoader
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 # TODO: add dll directory for OpenSlide avoiding giving specific path
-# os.add_dll_directory(r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin")
+os.add_dll_directory(r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin")
 from src.preprocessing.camelyon16_mil_dataset import Camelyon16MILDataset
 from src.train import train_model
 from src.eval import evaluate_model
