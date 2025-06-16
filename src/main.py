@@ -6,6 +6,7 @@ from tqdm import tqdm
 import torch
 from torch.utils.data import DataLoader
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+# TODO: add dll directory for OpenSlide avoiding giving specific path
 os.add_dll_directory(r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin")
 from src.preprocessing.camelyon16_mil_dataset import Camelyon16MILDataset
 from src.train import train_model
@@ -51,7 +52,7 @@ def download_file(url, destination_path):
 def download_dataset(data_type, subset, base_dir="../data", remote=False):
     """
     Downloads the specified subset of the CAMELYON dataset.
-    Args:
+    Parameters:
         data_type: "CAMELYON16" or "CAMELYON17"
         subset: "normal", "tumor", or "center_0"
         base_dir: Directory to save the downloaded files.
@@ -72,10 +73,7 @@ def download_dataset(data_type, subset, base_dir="../data", remote=False):
 
     if base_dir.endswith('/'):
             base_dir = base_dir[:-1]
-        
-    if not os.path.exists(base_dir):
-        print(f"[ERROR] Base directory {base_dir} does not exist. Please create it first.")
-        return
+    
     for file_path in files:
         url = BASE_URL + file_path
         destination_path = os.path.join(base_dir, os.path.basename(file_path))
