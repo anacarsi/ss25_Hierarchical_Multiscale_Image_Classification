@@ -55,30 +55,51 @@ def download_file(url, destination_path):
 
 def download_files(base_dir, file_groups, remote=False):
     """
-    Generalized function to download files into specified directories.
-
-    Parameters:
-    - base_dir: str, base directory for downloaded files.
-    - file_groups: dict, mapping of subdirectories to file lists.
-    - remote: bool, if True, download all files; if False, download only one file for testing.
+    Download and manage the required dataset files (with strict size limits).
     """
+    limits = {
+        "train_normal": 35,
+        "train_tumor": 35,
+        "test_images": 10
+    }
+
     for group_name, files in file_groups.items():
-        group_dir = os.path.join(base_dir, group_name)  # Ensure correct subdirectory
+        group_dir = os.path.join(base_dir, group_name)
         os.makedirs(group_dir, exist_ok=True)
-        print(f"[INFO] Downloading files to {group_dir}...")
+
+        category = "train_normal" if "normal" in group_name else \
+                   "train_tumor" if "tumor" in group_name else \
+                   "test_images" if "test" in group_name else None
+
+        limit = limits.get(category, len(files))
+        files = files[:limit]
+
+        # Clean up extra files
+        existing = [f for f in os.listdir(group_dir) if f.endswith(".tif")]
+        for f in existing:
+            num = int(f.split("_")[1].split(".")[0])
+            if (category == "train_normal" or category == "train_tumor") and num > 35:
+                os.remove(os.path.join(group_dir, f))
+            elif category == "test_images" and num > 10:
+                os.remove(os.path.join(group_dir, f))
 
         if not remote:
-            files = files[:9]  # For local testing, limit to the first file
+            files = files[:1]  # For local testing, only download one file
+            if category == "train_normal" and num > 2:
+                os.remove(os.path.join(group_dir, f))
+            elif category == "test_images" and num > 1:
+                os.remove(os.path.join(group_dir, f))
+            elif category == "train_tumor" and num > 2:
+                os.remove(os.path.join(group_dir, f))
 
         for file_path in files:
             destination_path = os.path.join(group_dir, os.path.basename(file_path))
             if os.path.exists(destination_path):
-                print(f"[INFO] File already exists: {destination_path}")
-                continue  # Skip downloading if the file already exists
-
+                continue
             url = BASE_URL + file_path
-            print(f"[INFO] Downloading: {url}")
             download_file(url, destination_path)
+        print(f"[INFO] Downloaded {len(files)} files for group '{group_name}' to {group_dir}.")
+
 
 def download_dataset(base_dir="./data", remote=False):
     """
@@ -129,35 +150,44 @@ def extract_patches(type: str, ):
     val_wsi(image, patch_size, batch_size)
     print("[INFO] Patch extraction completed.")
 
-def create_validation_set(base_dir="./data", val_split=0.2):
+def create_validation_set(base_dir="./data"):
     """
-    Create a validation set by splitting a portion of the training set.
-
-    Parameters:
-    - base_dir: str, base directory for the dataset.
-    - val_split: float, fraction of the training set to use as validation (e.g., 0.2 for 20%).
+    Create validation set: exactly 10 files (5 normal + 5 tumor).
     """
-    train_img_dir = os.path.join(base_dir, "camelyon16/train/img")
-    val_img_dir = os.path.join(base_dir, "camelyon16/val/img")
-    os.makedirs(val_img_dir, exist_ok=True)
+    src_dir = os.path.join(base_dir, "camelyon16/train/img")
+    dst_dir = os.path.join(base_dir, "camelyon16/val/img")
+    os.makedirs(dst_dir, exist_ok=True)
 
-    # Get all training files
-    train_files = [f for f in os.listdir(train_img_dir) if f.endswith(".tif")]
+    normal_files = sorted([f for f in os.listdir(src_dir) if f.startswith("normal")])[:5]
+    tumor_files = sorted([f for f in os.listdir(src_dir) if f.startswith("tumor")])[:5]
 
-    # Shuffle and split files for validation
-    random.shuffle(train_files)
-    val_count = int(len(train_files) * val_split)
-    val_files = train_files[:val_count]
+    for f in normal_files + tumor_files:
+        shutil.move(os.path.join(src_dir, f), os.path.join(dst_dir, f))
+    print(f"[INFO] Validation set created with {len(normal_files)} normal and {len(tumor_files)} tumor files.")
 
-    print(f"[INFO] Moving {val_count} files to validation set...")
+def extract_patches():
+    """
+    Extract maximally diverse and padded patches.
+    """
+    print("[INFO] Extracting patches...")
+    patch_size = 512
+    overlap = 0.25  # 25% overlap for sliding window
+    stride = int(patch_size * (1 - overlap))
 
-    # Move files to validation directory
-    for file_name in val_files:
-        src_path = os.path.join(train_img_dir, file_name)
-        dest_path = os.path.join(val_img_dir, file_name)
-        shutil.move(src_path, dest_path)
+    base_dir = os.path.join("..", "data", "camelyon16", "train", "img")
+    for file in os.listdir(base_dir):
+        if not file.endswith(".tif"):
+            continue
+        file_path = os.path.join(base_dir, file)
+        slide = openslide.OpenSlide(file_path)
+        width, height = slide.dimensions
 
-    print("[INFO] Validation set creation completed.")
+        for x in range(0, width - patch_size + 1, stride):
+            for y in range(0, height - patch_size + 1, stride):
+                patch = slide.read_region((x, y), 0, (patch_size, patch_size)).convert("RGB")
+                # TODO: Save the patch to a directory
+
+    print("[INFO] Patch extraction completed.")
 
 def prepare_data(): # TODO: WIP
     """
@@ -166,7 +196,7 @@ def prepare_data(): # TODO: WIP
     print("[INFO] Preparing data...")
 
     # Create a validation set from the training data
-    create_validation_set(base_dir="./data", val_split=0.2)
+    create_validation_set(base_dir="./data")
 
     # Extract masks
     zip_path = os.path.join(os.getcwd(), "..", "data", "camelyon16", "masks", "lesion_annotations.zip")
