@@ -52,7 +52,6 @@ def download_file(url, destination_path):
     except requests.exceptions.RequestException as e:
         print(f"[ERROR] Failed to download {url}: {e}")
         return False
-
 def download_files(base_dir, file_groups, remote=False):
     """
     Download and manage the required dataset files (with strict size limits).
@@ -67,38 +66,42 @@ def download_files(base_dir, file_groups, remote=False):
         group_dir = os.path.join(base_dir, group_name)
         os.makedirs(group_dir, exist_ok=True)
 
-        category = "train_normal" if "normal" in group_name else \
-                   "train_tumor" if "tumor" in group_name else \
-                   "test_images" if "test" in group_name else None
+        # Categorize files
+        categorized_files = {"train_normal": [], "train_tumor": [], "test_images": []}
+        for f in files:
+            fname = os.path.basename(f)
+            if fname.startswith("normal"):
+                categorized_files["train_normal"].append(f)
+            elif fname.startswith("tumor"):
+                categorized_files["train_tumor"].append(f)
+            elif fname.startswith("test"):
+                categorized_files["test_images"].append(f)
 
-        limit = limits.get(category, len(files))
-        files = files[:limit]
+        # Process each category
+        for category, file_list in categorized_files.items():
+            limit = limits[category]
+            file_list = file_list[:limit]  # restrict to desired number
 
-        # Clean up extra files
-        existing = [f for f in os.listdir(group_dir) if f.endswith(".tif")]
-        for f in existing:
-            num = int(f.split("_")[1].split(".")[0])
-            if (category == "train_normal" or category == "train_tumor") and num > 35:
-                os.remove(os.path.join(group_dir, f))
-            elif category == "test_images" and num > 10:
-                os.remove(os.path.join(group_dir, f))
+            existing = [f for f in os.listdir(group_dir) if f.endswith(".tif") and category.split("_")[1] in f]
+            for f in existing:
+                try:
+                    num = int(f.split("_")[1].split(".")[0])
+                    if num > limit:
+                        print(f"[INFO] Deleting excess file: {f}")
+                        os.remove(os.path.join(group_dir, f))
+                except Exception as e:
+                    print(f"[WARNING] Failed to parse file number for {f}: {e}")
 
-        if not remote:
-            files = files[:1]  # For local testing, only download one file
-            if category == "train_normal" and num > 2:
-                os.remove(os.path.join(group_dir, f))
-            elif category == "test_images" and num > 1:
-                os.remove(os.path.join(group_dir, f))
-            elif category == "train_tumor" and num > 2:
-                os.remove(os.path.join(group_dir, f))
-
-        for file_path in files:
-            destination_path = os.path.join(group_dir, os.path.basename(file_path))
-            if os.path.exists(destination_path):
-                continue
-            url = BASE_URL + file_path
-            download_file(url, destination_path)
-        print(f"[INFO] Downloaded {len(files)} files for group '{group_name}' to {group_dir}.")
+            # Only download missing files
+            if not remote:
+                file_list = file_list[:1]  # For local testing, only download one file
+            for file_path in file_list:
+                file_name = os.path.basename(file_path)
+                destination_path = os.path.join(group_dir, file_name)
+                if os.path.exists(destination_path):
+                    continue
+                url = BASE_URL + file_path
+                download_file(url, destination_path)
 
 
 def download_dataset(base_dir="./data", remote=False):
