@@ -5,9 +5,14 @@ import requests
 from tqdm import tqdm
 import torch
 from torch.utils.data import DataLoader
+from PIL import Image, ImageDraw
+import xml.etree.ElementTree as ET
+from torchvision import transforms
+from src.preprocessing.patch_dataset_loader import PatchDataset
+from src.models.resnet import ResNet18FeatureExtractor
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 # TODO: add dll directory for OpenSlide avoiding giving specific path
-# os.add_dll_directory(r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin")
+os.add_dll_directory(r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin")
 from src.preprocessing.camelyon16_mil_dataset import Camelyon16MILDataset
 from src.train import train_model
 from src.eval import evaluate_model
@@ -18,6 +23,8 @@ import random
 import shutil
 import openslide
 import zipfile
+from PIL import Image
+import numpy as np
 
 # Base URL for the CAMELYON16 dataset
 BASE_URL = "https://s3.ap-northeast-1.wasabisys.com/gigadb-datasets/live/pub/10.5524/100001_101000/100439/"
@@ -140,18 +147,153 @@ def extract_zip(zip_path, extract_to):
         zip_ref.extractall(extract_to)
     print(f"[INFO] Extracted {zip_path} to {extract_to}")
 
+def parse_xml_mask(xml_path, level_dims, downsample):
+    """Convert XML annotation to binary mask."""
+    tree = ET.parse(xml_path)
+    root = tree.getroot()
 
-def extract_patches(type: str, ):
+    mask = Image.new("L", level_dims, 0)  # 'L' mode for 8-bit pixels, black/white
+    draw = ImageDraw.Draw(mask)
+
+    for annotation in root.findall(".//Annotation"):
+        for region in annotation.findall("Region"):
+            vertices = region.find("Vertices")
+            coords = [
+                (
+                    int(float(vertex.get("X")) / downsample),
+                    int(float(vertex.get("Y")) / downsample)
+                )
+                for vertex in vertices.findall("Vertex")
+            ]
+            draw.polygon(coords, outline=1, fill=1)
+
+    return mask
+def extract_patches(base_dir="data", patch_size=512, level=0, stride=None):
     """
-    Extract patches from the downloaded WSI images.
+    Extract patches from WSIs at a specified level, apply mask overlays, and save tumor vs normal labels.
+    Only extracts patches if they have not already been extracted for a given image.
     """
-    print("[INFO] Extracting patches...")
-    patch_size = 512
-    batch_size = 12
-    image_path = "../data/test_040.tif" 
-    image = openslide.OpenSlide(image_path)
-    val_wsi(image, patch_size, batch_size)
-    print("[INFO] Patch extraction completed.")
+    import openslide
+    import numpy as np
+    from PIL import Image
+    import os
+
+    print(f"[INFO] Extracting patches at level {level}...")
+    stride = stride or patch_size
+
+    wsi_dir = os.path.join(os.getcwd(), base_dir, "camelyon16", "train", "img")
+    annot_dir = os.path.join(os.getcwd(), base_dir, "camelyon16", "masks", "annotations")
+    level_dir = os.path.join(os.getcwd(), base_dir, "camelyon16", "patches", f"level_{level}")
+    os.makedirs(level_dir, exist_ok=True)
+
+    for file in os.listdir(wsi_dir):
+        if not file.endswith(".tif"):
+            continue
+
+        prefix = file.replace('.tif', '')
+        # Check if patches for this image already exist
+        already_extracted = False
+        for label in ["normal", "tumor"]:
+            patch_save_dir = os.path.join(level_dir, label)
+            if os.path.exists(patch_save_dir):
+                existing_patches = [f for f in os.listdir(patch_save_dir) if f.startswith(prefix)]
+                if len(existing_patches) > 0:
+                    already_extracted = True
+                    break
+        if already_extracted:
+            print(f"[INFO] Patches for {file} already extracted, skipping.")
+            continue
+
+        wsi_path = os.path.join(wsi_dir, file)
+        xml_name = file.replace(".tif", ".xml")
+        xml_path = os.path.join(annot_dir, xml_name)
+        print(f"[DEBUG] Processing file: {wsi_path} with XML: {xml_path}")
+        try:
+            slide = openslide.OpenSlide(wsi_path)
+        except Exception as e:
+            print(f"[ERROR] Could not open {wsi_path}: {e}")
+            continue
+        downsample = slide.level_downsamples[level]
+        width, height = slide.level_dimensions[level]
+
+        # Load and render XML mask
+        mask = None
+        if os.path.exists(xml_path):
+            try:
+                mask = parse_xml_mask(xml_path, (width, height), downsample)
+            except Exception as e:
+                print(f"[WARNING] Failed to parse XML for {file}: {e}")
+        else:
+            print(f"[INFO] No annotation found for {file}, treating as normal.")
+
+        print(f"[INFO] Processing {file} at level {level} (size: {width}x{height})")
+
+        patch_count = 0
+        for x in range(0, width - patch_size + 1, stride):
+            for y in range(0, height - patch_size + 1, stride):
+                patch = slide.read_region(
+                    (int(x * downsample), int(y * downsample)),
+                    level,
+                    (patch_size, patch_size)
+                ).convert("RGB")
+
+                label = "normal"
+                if mask:
+                    mask_patch = mask.crop((x, y, x + patch_size, y + patch_size))
+                    if np.any(np.array(mask_patch) > 0):
+                        label = "tumor"
+
+                patch_array = np.array(patch)
+                if np.mean(patch_array) > 240:  # too white (empty tissue)
+                    continue
+
+                patch_save_dir = os.path.join(level_dir, label)
+                os.makedirs(patch_save_dir, exist_ok=True)
+                patch_name = f"{prefix}_x{x}_y{y}.png"
+                patch.save(os.path.join(patch_save_dir, patch_name))
+                patch_count += 1
+                if patch_count % 100 == 0:
+                    print(f"Extracted patches {patch_count} for {file}")
+
+        print(f"[INFO] Patch extraction complete for {file} at level {level}. Total patches: {patch_count}")
+
+def extract_features(level=0):
+    """
+    Extract features from the patches using a ResNet18 model.
+    """
+    transform = transforms.Compose([
+    transforms.Resize((224, 224)),
+    transforms.ToTensor(),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+    ])
+
+    patch_dir = './data/camelyon16/patches/level_0' 
+    dataset = PatchDataset(patch_dir, transform=transform)
+    loader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    model = ResNet18FeatureExtractor().to(device)
+    model.eval()
+
+    features = []
+    labels = []
+    paths = []
+
+    with torch.no_grad():
+        for imgs, lbls, img_paths in loader:
+            imgs = imgs.to(device)
+            feats = model(imgs)  # (batch, 512)
+            features.append(feats.cpu())
+            labels.extend(lbls)
+            paths.extend(img_paths)
+
+    features = torch.cat(features, dim=0)  # (num_patches, 512)
+
+    np.save('patch_features.npy', features.numpy())
+    np.save('patch_labels.npy', np.array(labels))
+    with open('patch_paths.txt', 'w') as f:
+        for p in paths:
+            f.write(f"{p}\n")
 
 def create_validation_set(base_dir="./data"):
     """
@@ -167,30 +309,6 @@ def create_validation_set(base_dir="./data"):
     for f in normal_files + tumor_files:
         shutil.move(os.path.join(src_dir, f), os.path.join(dst_dir, f))
     print(f"[INFO] Validation set created with {len(normal_files)} normal and {len(tumor_files)} tumor files.")
-
-def extract_patches():
-    """
-    Extract maximally diverse and padded patches.
-    """
-    print("[INFO] Extracting patches...")
-    patch_size = 512
-    overlap = 0.25  # 25% overlap for sliding window
-    stride = int(patch_size * (1 - overlap))
-
-    base_dir = os.path.join("..", "data", "camelyon16", "train", "img")
-    for file in os.listdir(base_dir):
-        if not file.endswith(".tif"):
-            continue
-        file_path = os.path.join(base_dir, file)
-        slide = openslide.OpenSlide(file_path)
-        width, height = slide.dimensions
-
-        for x in range(0, width - patch_size + 1, stride):
-            for y in range(0, height - patch_size + 1, stride):
-                patch = slide.read_region((x, y), 0, (patch_size, patch_size)).convert("RGB")
-                # TODO: Save the patch to a directory
-
-    print("[INFO] Patch extraction completed.")
 
 def prepare_data(): # TODO: WIP
     """
