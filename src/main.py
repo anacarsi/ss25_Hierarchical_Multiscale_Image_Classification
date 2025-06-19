@@ -20,9 +20,11 @@ import shutil
 import torch.nn as nn
 
 # TODO: add dll directory for OpenSlide avoiding giving specific path
+"""
 os.add_dll_directory(
     r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
 )
+"""
 import zipfile
 from PIL import Image
 
