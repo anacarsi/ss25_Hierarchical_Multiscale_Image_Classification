@@ -2,6 +2,7 @@ from torch.utils.data import Dataset
 from PIL import Image
 import os
 
+
 class PatchDataset(Dataset):
     def __init__(self, patch_dir, transform=None):
         self.transform = transform

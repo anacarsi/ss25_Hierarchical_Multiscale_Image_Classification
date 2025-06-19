@@ -8,6 +8,7 @@ import os
 from torch.utils.data import Dataset
 from PIL import Image
 
+
 class Camelyon16MILDataset(Dataset):
     def __init__(self, patch_dir, labels, transform=None):
         self.patch_dir = patch_dir
@@ -24,9 +25,11 @@ class Camelyon16MILDataset(Dataset):
         return len(self.slide_ids)
 
     def __getitem__(self, idx):
-        slide_id = self.slide_ids[idx] 
-        patch_paths = [os.path.join(self.patch_dir, slide_id, f) 
-                       for f in os.listdir(os.path.join(self.patch_dir, slide_id))]
+        slide_id = self.slide_ids[idx]
+        patch_paths = [
+            os.path.join(self.patch_dir, slide_id, f)
+            for f in os.listdir(os.path.join(self.patch_dir, slide_id))
+        ]
         patches = [Image.open(p) for p in patch_paths]
         if self.transform:
             patches = [self.transform(p) for p in patches]

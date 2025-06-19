@@ -3,6 +3,7 @@
 import os
 import torch
 
+
 class Config:
     """
     Configuration settings for the CAMELYON16 project.
@@ -13,9 +14,10 @@ class Config:
     Returns:
     - None: Provides static configuration values for the project.
     """
+
     # Dataset paths
-    DATASET_PATH = os.path.join('data', 'camelyon16')
-    PATCHES_PATH = os.path.join('data', 'preprocessing', 'patches')
+    DATASET_PATH = os.path.join("data", "camelyon16")
+    PATCHES_PATH = os.path.join("data", "preprocessing", "patches")
 
     # Model parameters
     INPUT_SIZE = (224, 224)  # Input size for the CNN encoder
@@ -32,12 +34,12 @@ class Config:
     MONTE_CARLO_SAMPLES = 100  # Number of samples for Monte Carlo Dropout
 
     # Device configuration
-    DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     # Logging and saving
-    LOG_DIR = 'logs'
-    CHECKPOINT_DIR = 'checkpoints'
-    MODEL_SAVE_PATH = os.path.join(CHECKPOINT_DIR, 'mil_model.pth')
+    LOG_DIR = "logs"
+    CHECKPOINT_DIR = "checkpoints"
+    MODEL_SAVE_PATH = os.path.join(CHECKPOINT_DIR, "mil_model.pth")
 
     @staticmethod
     def print_config():
@@ -52,5 +54,5 @@ class Config:
         """
         print("Configuration:")
         for key, value in vars(Config).items():
-            if not key.startswith('__'):
+            if not key.startswith("__"):
                 print(f"{key}: {value}")
