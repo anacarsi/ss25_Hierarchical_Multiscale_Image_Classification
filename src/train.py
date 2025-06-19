@@ -1,52 +1,39 @@
-import os
-import torch
 import torch.nn as nn
-import torch.optim as optim
+import torch
+from .datasets.patch_dataset import PatchDataset
 from torch.utils.data import DataLoader
-from src.preprocessing.camelyon16_mil_dataset import Camelyon16MILDataset
-from src.models.cnn_encoder import CNNEncoder
-from src.models.mil_classifier import MILClassifier
-from src.models.mil_pooling import MeanPooling, AttentionPooling
-from src.config import Config
+from .models.resnet import ResNet18Classifier
 
-def train_model():
-    """
-    Train the MILClassifier model on the Camelyon dataset.
+def train_resnet_classifier(data_dir, epochs=5, batch_size=32, lr=1e-4):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dataset = PatchDataset(data_dir)
+    dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4)
 
-    Parameters:
-    - None
+    model = ResNet18Classifier().to(device)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
-    Returns:
-    - None: Saves model checkpoints during training.
-    """
-    train_dataset = Camelyon16MILDataset(data_dir=Config.DATA_DIR, mode='train')
-    train_loader = DataLoader(train_dataset, batch_size=Config.BATCH_SIZE, shuffle=True)
+    for epoch in range(epochs):
+        model.train()
+        total_loss, correct, total = 0.0, 0, 0
 
-    encoder = CNNEncoder()
-    pooling = MeanPooling() if Config.USE_MEAN_POOLING else AttentionPooling()
-    classifier = MILClassifier(encoder, pooling)
-    
-    criterion = nn.BCEWithLogitsLoss()
-    optimizer = optim.Adam(classifier.parameters(), lr=Config.LEARNING_RATE)
+        for imgs, labels in dataloader:
+            imgs, labels = imgs.to(device), labels.to(device)
 
-    classifier.train()
-    for epoch in range(Config.EPOCHS):
-        total_loss = 0
-        for bags, labels in train_loader:
-            optimizer.zero_grad()
-            outputs = classifier(bags)
+            outputs = model(imgs)
             loss = criterion(outputs, labels)
+
+            optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+
             total_loss += loss.item()
+            preds = outputs.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
 
-        print(f'Epoch [{epoch+1}/{Config.EPOCHS}], Loss: {total_loss/len(train_loader):.4f}')
+        print(f"Epoch {epoch+1}/{epochs} | Loss: {total_loss:.4f} | Acc: {100 * correct / total:.2f}%")
 
-        # Save model checkpoint
-        if (epoch + 1) % Config.SAVE_INTERVAL == 0:
-            torch.save(classifier.state_dict(), os.path.join(Config.MODEL_DIR, f'model_epoch_{epoch+1}.pth'))
+    torch.save(model.state_dict(), "resnet18_patch_classifier.pth")
+    print("[INFO] Training complete. Model saved.")
 
-    print("Training complete.")
-
-if __name__ == "__main__":
-    train_model()

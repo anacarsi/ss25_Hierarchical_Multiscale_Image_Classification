@@ -20,36 +20,42 @@ HiPAC — Hierarchical Patch-based Adaptive Classifier
 
 - To download the CAMELYON16 dataset:
     ```sh
-    python src/main.py --download --base_dir ./data --remote
+    python src/main.py --download --remote
     ```
     - `--remote`: Downloads all files (set to `False` for testing to download only one file).
 
 ### 2. Extract Patches
 
-- Extract patches from WSIs: (WIP)
+- Extract patches from WSIs:
     ```sh
     python src/main.py --patch
     ```
 
 ### 3. Prepare Data
 
-- Preprocess or augment data: (WIP)
+- Preprocess or augment data:
     ```sh
-    python src/main.py --prepare
+    python src/main.py --prep
     ```
 
-### 4. Train Model
+### 4. Create a validation set
+    ```sh
+    python src/main.py --val
+    ```
 
-- Train the U-Net model: (WIP)
+### 5. Extract feature vectors from patches using ResNet18.
+    ```sh
+    python src/main.py --extract_features
+    ```
+### 6. Check Structure
+- Check if the directory structure is correct. If not, creates the correct one.
+    ```sh
+    python src/main.py --check_structure
+    ```
+### 7. Train
+- Train a ResNet18 classifier on extracted patches.
     ```sh
     python src/main.py --train
-    ```
-
-### 5. Test Model
-
-- Test the trained U-Net model:(WIP)
-    ```sh
-    python src/main.py --test
     ```
 
 ## Configuration
