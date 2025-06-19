@@ -2,7 +2,8 @@
 __pycache__/
 *.py[cod]
 *$py.class
-
+.pre-commit-config.yaml
+*.png
 # C extensions
 *.so
 data/

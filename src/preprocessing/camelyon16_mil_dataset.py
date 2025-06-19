@@ -17,9 +17,7 @@ class Camelyon16MILDataset(Dataset):
 
     def _create_bags(self):
         bags = []
-        # Logic to load WSI files and create bags of patches
         # Each bag corresponds to a Whole Slide Image and contains its patches
-        # Example: bags.append((patches, label))
         return bags
 
     def __len__(self):

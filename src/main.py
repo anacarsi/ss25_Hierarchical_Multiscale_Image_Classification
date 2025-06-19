@@ -8,26 +8,26 @@ from torch.utils.data import DataLoader
 from PIL import Image, ImageDraw
 import xml.etree.ElementTree as ET
 from torchvision import transforms
-from src.preprocessing.patch_dataset_loader import PatchDataset
-from src.models.resnet import ResNet18FeatureExtractor
+from models.resnet import ResNet18FeatureExtractor
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from models.resnet import ResNet18Classifier
+from datasets.patch_dataset import PatchDataset
+from utils.structure import group_patches_by_slide
+from torch.optim import Adam
+import numpy as np
+import shutil
+import torch.nn as nn
 # TODO: add dll directory for OpenSlide avoiding giving specific path
 os.add_dll_directory(r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin")
-from src.preprocessing.camelyon16_mil_dataset import Camelyon16MILDataset
-from src.train import train_model
-from src.eval import evaluate_model
-from src.config import Config
-from src.preprocessing.pre_WSI import val_wsi
-from src.models.unet.UNet import UNet
-import random
-import shutil
-import openslide
 import zipfile
 from PIL import Image
-import numpy as np
 
 # Base URL for the CAMELYON16 dataset
 BASE_URL = "https://s3.ap-northeast-1.wasabisys.com/gigadb-datasets/live/pub/10.5524/100001_101000/100439/"
+
+# Patches size
+PATCH_SIZE_LEVEL_0 =  1792
+
 
 # File paths for CAMELYON16
 CAMELYON16_FILES = {
@@ -168,6 +168,51 @@ def parse_xml_mask(xml_path, level_dims, downsample):
             draw.polygon(coords, outline=1, fill=1)
 
     return mask
+
+def train_resnet_classifier():
+    print("[INFO] Training ResNet18 classifier on extracted patches...")
+    patch_dir = './data/camelyon16/patches/level_4'  
+
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
+    ])
+    dataset = PatchDataset(patch_dir, transform=transform)
+    loader = DataLoader(dataset, batch_size=32, shuffle=True)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = ResNet18Classifier().to(device)
+
+    optimizer = Adam(model.parameters(), lr=1e-4)
+    criterion = nn.CrossEntropyLoss()
+
+    # Training loop
+    num_epochs = 5
+    for epoch in range(num_epochs):
+        model.train()
+        total_loss, correct = 0, 0
+        for imgs, labels, _ in loader:
+            imgs, labels = imgs.to(device), labels.to(device)
+
+            optimizer.zero_grad()
+            outputs = model(imgs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+
+            total_loss += loss.item()
+            preds = outputs.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+
+        acc = correct / len(dataset)
+        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss:.4f}, Accuracy: {acc:.4f}")
+
+    torch.save(model.state_dict(), "resnet18_patch_classifier.pth")
+    print("[INFO] ResNet18 classifier training complete and saved.")
+
+
 def extract_patches(base_dir="data", patch_size=512, level=0, stride=None):
     """
     Extract patches from WSIs at a specified level, apply mask overlays, and save tumor vs normal labels.
@@ -229,7 +274,7 @@ def extract_patches(base_dir="data", patch_size=512, level=0, stride=None):
         print(f"[INFO] Processing {file} at level {level} (size: {width}x{height})")
 
         patch_count = 0
-        for x in range(0, width - patch_size + 1, stride):
+        for x in range(0, width - patch_size + 1, stride): # not overlapping patches and no padding
             for y in range(0, height - patch_size + 1, stride):
                 patch = slide.read_region(
                     (int(x * downsample), int(y * downsample)),
@@ -257,7 +302,7 @@ def extract_patches(base_dir="data", patch_size=512, level=0, stride=None):
 
         print(f"[INFO] Patch extraction complete for {file} at level {level}. Total patches: {patch_count}")
 
-def extract_features(level=0):
+def extract_features(level=4):
     """
     Extract features from the patches using a ResNet18 model.
     """
@@ -266,10 +311,12 @@ def extract_features(level=0):
     transforms.ToTensor(),
     transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     ])
-
-    patch_dir = './data/camelyon16/patches/level_0' 
+    
+    patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
     dataset = PatchDataset(patch_dir, transform=transform)
     loader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False)
+    print(f"[INFO] Extracting features from patches at level {level} with patch directory: {patch_dir}, which exists: {os.path.exists(patch_dir)}")
+    print("[INFo] WSI images:", os.listdir(patch_dir) if os.path.exists(patch_dir) else "Not found")
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = ResNet18FeatureExtractor().to(device)
@@ -281,12 +328,14 @@ def extract_features(level=0):
 
     with torch.no_grad():
         for imgs, lbls, img_paths in loader:
-            imgs = imgs.to(device)
-            feats = model(imgs)  # (batch, 512)
+            print("Batch size:", imgs.shape)
+            feats = model(imgs.to(device))
             features.append(feats.cpu())
             labels.extend(lbls)
             paths.extend(img_paths)
-
+    if not features:
+        print("[ERROR] No features were extracted. Check your patch directory and dataset.")
+        return
     features = torch.cat(features, dim=0)  # (num_patches, 512)
 
     np.save('patch_features.npy', features.numpy())
@@ -310,6 +359,27 @@ def create_validation_set(base_dir="./data"):
         shutil.move(os.path.join(src_dir, f), os.path.join(dst_dir, f))
     print(f"[INFO] Validation set created with {len(normal_files)} normal and {len(tumor_files)} tumor files.")
 
+def check_structure():
+    """
+    Check if the directory structure is correct.
+    """
+    expected_structure = [
+        "data/camelyon16/train/img",
+        "data/camelyon16/val/img",
+        "data/camelyon16/test/img",
+        "data/camelyon16/masks/annotations",
+        "data/camelyon16/patches/level_4/normal_001"
+    ]
+    
+    for path in expected_structure:
+        if not os.path.exists(path):
+            print(f"[ERROR] Missing expected directory: {path}")
+            if path.endswith("normal_001"):
+                group_patches_by_slide(patch_root=os.path.join(os.getcwd(), "data", "camelyon16", "patches", "level_4"))
+            return False
+    print("[INFO] Directory structure is correct.")
+    return True
+
 def prepare_data(): # TODO: WIP
     """
     Prepare data for training (e.g., preprocessing or augmentation).
@@ -320,45 +390,14 @@ def prepare_data(): # TODO: WIP
     create_validation_set(base_dir="./data")
 
     # Extract masks
+    if not os.path.exists(os.path.join(os.getcwd(), "..", "data", "camelyon16", "masks", "lesion_annotations.zip")):
+        print("[ERROR] Masks zip file not found. Please download the dataset first.")
+        return
     zip_path = os.path.join(os.getcwd(), "..", "data", "camelyon16", "masks", "lesion_annotations.zip")
     extract_to = os.path.join(os.getcwd(), "..", "data", "camelyon16", "masks", "annotations")
     extract_zip(zip_path, extract_to)
 
     print("[INFO] Data preparation completed.")
-
-def train_unet():
-    """
-    Train the U-Net model on the Camelyon dataset.
-    """
-    print("[INFO] Training U-Net model...")
-    config = Config()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    train_dataset = Camelyon16MILDataset(config.train_data_path)
-    train_loader = DataLoader(train_dataset, batch_size=config.batch_size, shuffle=True)
-
-    val_dataset = Camelyon16MILDataset(config.val_data_path)
-    val_loader = DataLoader(val_dataset, batch_size=config.batch_size, shuffle=False)
-
-    model = UNet(3, 3).to(device)
-    train_model(model, train_loader, device, config)
-    print("[INFO] U-Net training completed.")
-
-def test_unet():
-    """
-    Test the U-Net model on the test set.
-    """
-    print("[INFO] Testing U-Net model...")
-    config = Config()
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    test_dataset = Camelyon16MILDataset(config.test_data_path)
-    test_loader = DataLoader(test_dataset, batch_size=config.batch_size, shuffle=False)
-
-    model = UNet(3, 3).to(device)
-    model.load_state_dict(torch.load("UNet.pth"))
-    evaluate_model(model, test_loader, device, config)
-    print("[INFO] U-Net testing completed.")
 
 def main():
     parser = argparse.ArgumentParser(description="Camelyon Dataset Processing")
@@ -370,6 +409,9 @@ def main():
     parser.add_argument("-val", "--validation", action="store_true", help="Create validation set")
     parser.add_argument("-train", "--train", action="store_true", help="Train U-Net model")
     parser.add_argument("-test", "--test", action="store_true", help="Test U-Net model")
+    parser.add_argument("--extract_features", action="store_true", help="Extract features from patches")
+    parser.add_argument("--check_structure", action="store_true", help="Check directory structure")
+
     args = parser.parse_args()
 
     if args.download:
@@ -381,9 +423,12 @@ def main():
     if args.validation:
         create_validation_set(args.base_dir)
     if args.train:
-        train_unet()
-    if args.test:
-        test_unet()
+        train_resnet_classifier()
+    if args.extract_features:
+        extract_features()
+    if args.check_structure:
+        check_structure()
+    
 
 if __name__ == "__main__":
     main()
