@@ -7,22 +7,30 @@ from torchvision import models, transforms
 from PIL import Image
 import os
 
+
 class ResNet18FeatureExtractor(nn.Module):
     def __init__(self):
         super().__init__()
         resnet = models.resnet18(pretrained=True)
-        self.features = nn.Sequential(*list(resnet.children())[:-1])  # Output shape: (B, 512, 1, 1)
+        self.features = nn.Sequential(
+            *list(resnet.children())[:-1]
+        )  # Output shape: (B, 512, 1, 1)
 
     def forward(self, x):
         x = self.features(x)
-        return x.view(x.size(0), -1) # -> shape: (batch_size, 512)
+        return x.view(x.size(0), -1)  # -> shape: (batch_size, 512)
+
+
 class ResNet18Classifier(nn.Module):
     """
-    ResNet18 model for binary classification of patches. 
+    ResNet18 model for binary classification of patches.
     """
+
     def __init__(self):
         super().__init__()
-        self.model = models.resnet18(pretrained=True) # use pretrained weights on imagenet
+        self.model = models.resnet18(
+            pretrained=True
+        )  # use pretrained weights on imagenet
         num_ftrs = self.model.fc.in_features
         self.model.fc = nn.Linear(num_ftrs, 2)  # binary classification
 
@@ -35,6 +43,7 @@ class ResNet18Classifier(nn.Module):
             torch.Tensor: Output tensor of shape (B, 2) for binary classification.
         """
         return self.model(x)
+
 
 def extract_features_for_slide(slide_dir, model, transform, device, save_path):
     patch_files = sorted([f for f in os.listdir(slide_dir) if f.endswith(".png")])
@@ -55,22 +64,27 @@ def extract_features_for_slide(slide_dir, model, transform, device, save_path):
     else:
         print(f"[WARNING] No patches found in {slide_dir}")
 
-def run_feature_extraction(patch_root="data/camelyon16/patches/level_0", save_root="data/features"):
+
+def run_feature_extraction(
+    patch_root="data/camelyon16/patches/level_0", save_root="data/features"
+):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ResNet18FeatureExtractor().to(device).eval()
 
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize([0.485, 0.456, 0.406],
-                             [0.229, 0.224, 0.225])
-    ])
+    transform = transforms.Compose(
+        [
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
+        ]
+    )
 
     os.makedirs(save_root, exist_ok=True)
-    slide_dirs = [d for d in os.listdir(patch_root) if os.path.isdir(os.path.join(patch_root, d))]
+    slide_dirs = [
+        d for d in os.listdir(patch_root) if os.path.isdir(os.path.join(patch_root, d))
+    ]
 
     for slide_id in slide_dirs:
         slide_path = os.path.join(patch_root, slide_id)
         save_path = os.path.join(save_root, f"{slide_id}.pt")
         extract_features_for_slide(slide_path, model, transform, device, save_path)
-

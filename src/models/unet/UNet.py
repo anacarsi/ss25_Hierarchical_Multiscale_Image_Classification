@@ -5,6 +5,7 @@ from torchvision.transforms import transforms
 from torchvision.transforms.functional import center_crop
 from .BaseModel import BaseModel
 
+
 class UNet(BaseModel):
     """
     U-Net model implementation for image segmentation and classification.
@@ -18,8 +19,17 @@ class UNet(BaseModel):
     Returns:
     - None: Initializes the U-Net model.
     """
-    def __init__(self, batch_size=128, learning_rate=0.001, num_epochs=50, dataset_name="imagenet"):
-        super().__init__(batch_size, learning_rate, num_epochs, dataset_name=dataset_name)
+
+    def __init__(
+        self,
+        batch_size=128,
+        learning_rate=0.001,
+        num_epochs=50,
+        dataset_name="imagenet",
+    ):
+        super().__init__(
+            batch_size, learning_rate, num_epochs, dataset_name=dataset_name
+        )
         self.dataset_name = dataset_name
         self.build_model()
         self.train_losses = []
@@ -37,6 +47,7 @@ class UNet(BaseModel):
         Returns:
         - None: Constructs the encoder, bottleneck, decoder, and final layers.
         """
+
         class UNetModel(nn.Module):
             def __init__(self):
                 super(UNetModel, self).__init__()
@@ -56,7 +67,9 @@ class UNet(BaseModel):
                 self.dec1 = self.upconv_block(128 + 64, 64)
 
                 # Final output for classification
-                self.global_pool = nn.AdaptiveAvgPool2d(1)  # Global average pooling ----- or before bottleneck?
+                self.global_pool = nn.AdaptiveAvgPool2d(
+                    1
+                )  # Global average pooling ----- or before bottleneck?
                 self.fc = nn.Linear(64, 200)  # Fully connected layer for 200 classes
 
             def conv_block(self, in_channels, out_channels):
@@ -71,7 +84,9 @@ class UNet(BaseModel):
 
             def upconv_block(self, in_channels, out_channels):
                 return nn.Sequential(
-                    nn.ConvTranspose2d(in_channels, out_channels, kernel_size=2, stride=2),
+                    nn.ConvTranspose2d(
+                        in_channels, out_channels, kernel_size=2, stride=2
+                    ),
                     nn.BatchNorm2d(out_channels),
                     nn.ReLU(inplace=True),
                 )
@@ -107,7 +122,9 @@ class UNet(BaseModel):
                 and concatenate them along the channel dimension.
                 """
                 _, _, h, w = upsampled.size()
-                bypass = center_crop(bypass, (h, w))  # Use torchvision.transforms.functional.center_crop
+                bypass = center_crop(
+                    bypass, (h, w)
+                )  # Use torchvision.transforms.functional.center_crop
                 return torch.cat((upsampled, bypass), dim=1)
 
         self.net = UNetModel().to(self.device)
@@ -124,11 +141,13 @@ class UNet(BaseModel):
         Returns:
         - transforms.Compose: Composed transformations for the dataset.
         """
-        return transforms.Compose([
-            transforms.Resize((64, 64)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
-        ])
+        return transforms.Compose(
+            [
+                transforms.Resize((64, 64)),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+            ]
+        )
 
     def train(self):
         """
@@ -164,7 +183,9 @@ class UNet(BaseModel):
             epoch_acc = 100 * correct / total
             self.train_losses.append(epoch_loss)
             self.train_accuracies.append(epoch_acc)
-            print(f"Epoch {epoch + 1}/{self.num_epochs}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.2f}%")
+            print(
+                f"Epoch {epoch + 1}/{self.num_epochs}, Loss: {epoch_loss:.4f}, Accuracy: {epoch_acc:.2f}%"
+            )
 
         print("Training completed!")
 

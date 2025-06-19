@@ -1,6 +1,7 @@
 import os
 import shutil
 
+
 def group_patches_by_slide(patch_root="data/camelyon16/patches/level_0"):
     """
     Groups patches by slide ID, moving them into directories named after the slide ID.
@@ -25,6 +26,9 @@ def group_patches_by_slide(patch_root="data/camelyon16/patches/level_0"):
             shutil.move(src, dst)
 
     print(f"[INFO] Grouping complete.")
-    
-patch_directory = os.path.join(os.getcwd(), "..", "data", "camelyon16", "patches", "level_4")
+
+
+patch_directory = os.path.join(
+    os.getcwd(), "..", "data", "camelyon16", "patches", "level_4"
+)
 group_patches_by_slide(patch_root=patch_directory)

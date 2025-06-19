@@ -9,6 +9,7 @@ from PIL import Image, ImageDraw
 import xml.etree.ElementTree as ET
 from torchvision import transforms
 from models.resnet import ResNet18FeatureExtractor
+
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from models.resnet import ResNet18Classifier
 from datasets.patch_dataset import PatchDataset
@@ -17,8 +18,11 @@ from torch.optim import Adam
 import numpy as np
 import shutil
 import torch.nn as nn
+
 # TODO: add dll directory for OpenSlide avoiding giving specific path
-os.add_dll_directory(r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin")
+os.add_dll_directory(
+    r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
+)
 import zipfile
 from PIL import Image
 
@@ -26,17 +30,24 @@ from PIL import Image
 BASE_URL = "https://s3.ap-northeast-1.wasabisys.com/gigadb-datasets/live/pub/10.5524/100001_101000/100439/"
 
 # Patches size
-PATCH_SIZE_LEVEL_0 =  1792
+PATCH_SIZE_LEVEL_0 = 1792
 
 
 # File paths for CAMELYON16
 CAMELYON16_FILES = {
-    "train_normal": [f"CAMELYON16/training/normal/normal_{i:03d}.tif" for i in range(1, 112)],
-    "train_tumor": [f"CAMELYON16/training/tumor/tumor_{i:03d}.tif" for i in range(1, 112)],
-    "test_images": [f"CAMELYON16/testing/images/test_{i:03d}.tif" for i in range(1, 51)],
+    "train_normal": [
+        f"CAMELYON16/training/normal/normal_{i:03d}.tif" for i in range(1, 112)
+    ],
+    "train_tumor": [
+        f"CAMELYON16/training/tumor/tumor_{i:03d}.tif" for i in range(1, 112)
+    ],
+    "test_images": [
+        f"CAMELYON16/testing/images/test_{i:03d}.tif" for i in range(1, 51)
+    ],
     "train_masks": ["CAMELYON16/training/lesion_annotations.zip"],
-    "test_masks": ["CAMELYON16/testing/lesion_annotations.zip"]
+    "test_masks": ["CAMELYON16/testing/lesion_annotations.zip"],
 }
+
 
 def download_file(url, destination_path):
     """
@@ -46,10 +57,13 @@ def download_file(url, destination_path):
         print(f"[INFO] Downloading: {url}")
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
-            total_size = int(r.headers.get('content-length', 0))
-            with open(destination_path, 'wb') as f, tqdm(
-                total=total_size, unit='iB', unit_scale=True, unit_divisor=1024,
-                desc=f"Downloading {os.path.basename(destination_path)}"
+            total_size = int(r.headers.get("content-length", 0))
+            with open(destination_path, "wb") as f, tqdm(
+                total=total_size,
+                unit="iB",
+                unit_scale=True,
+                unit_divisor=1024,
+                desc=f"Downloading {os.path.basename(destination_path)}",
             ) as bar:
                 for chunk in r.iter_content(chunk_size=8192):
                     size = f.write(chunk)
@@ -59,15 +73,13 @@ def download_file(url, destination_path):
     except requests.exceptions.RequestException as e:
         print(f"[ERROR] Failed to download {url}: {e}")
         return False
+
+
 def download_files(base_dir, file_groups, remote=False):
     """
     Download and manage the required dataset files (with strict size limits).
     """
-    limits = {
-        "train_normal": 35,
-        "train_tumor": 35,
-        "test_images": 10
-    }
+    limits = {"train_normal": 35, "train_tumor": 35, "test_images": 10}
 
     for group_name, files in file_groups.items():
         group_dir = os.path.join(base_dir, group_name)
@@ -89,7 +101,11 @@ def download_files(base_dir, file_groups, remote=False):
             limit = limits[category]
             file_list = file_list[:limit]  # restrict to desired number
 
-            existing = [f for f in os.listdir(group_dir) if f.endswith(".tif") and category.split("_")[1] in f]
+            existing = [
+                f
+                for f in os.listdir(group_dir)
+                if f.endswith(".tif") and category.split("_")[1] in f
+            ]
             for f in existing:
                 try:
                     num = int(f.split("_")[1].split(".")[0])
@@ -124,15 +140,17 @@ def download_dataset(base_dir="./data", remote=False):
 
     # Define file groups for training, testing, and masks
     file_groups = {
-        "train/img": CAMELYON16_FILES["train_normal"] + CAMELYON16_FILES["train_tumor"],  # Both normal and tumor images go to img
+        "train/img": CAMELYON16_FILES["train_normal"]
+        + CAMELYON16_FILES["train_tumor"],  # Both normal and tumor images go to img
         "test/img": CAMELYON16_FILES["test_images"],
-        "masks": CAMELYON16_FILES["train_masks"] + CAMELYON16_FILES["test_masks"]
+        "masks": CAMELYON16_FILES["train_masks"] + CAMELYON16_FILES["test_masks"],
     }
 
     download_files(camelyon_dir, file_groups, remote)
 
+
 def extract_zip(zip_path, extract_to):
-    """ 
+    """
     Extract masks to annotations.
     Parameters:
     - zip_path: str, path to the zip file to extract.
@@ -143,9 +161,10 @@ def extract_zip(zip_path, extract_to):
     else:
         print(f"[INFO] Directory {extract_to} already exists. Skipping extraction.")
         return
-    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+    with zipfile.ZipFile(zip_path, "r") as zip_ref:
         zip_ref.extractall(extract_to)
     print(f"[INFO] Extracted {zip_path} to {extract_to}")
+
 
 def parse_xml_mask(xml_path, level_dims, downsample):
     """Convert XML annotation to binary mask."""
@@ -161,7 +180,7 @@ def parse_xml_mask(xml_path, level_dims, downsample):
             coords = [
                 (
                     int(float(vertex.get("X")) / downsample),
-                    int(float(vertex.get("Y")) / downsample)
+                    int(float(vertex.get("Y")) / downsample),
                 )
                 for vertex in vertices.findall("Vertex")
             ]
@@ -169,16 +188,18 @@ def parse_xml_mask(xml_path, level_dims, downsample):
 
     return mask
 
+
 def train_resnet_classifier():
     print("[INFO] Training ResNet18 classifier on extracted patches...")
-    patch_dir = './data/camelyon16/patches/level_4'  
+    patch_dir = "./data/camelyon16/patches/level_4"
 
-    transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])
-    ])
+    transform = transforms.Compose(
+        [
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
     dataset = PatchDataset(patch_dir, transform=transform)
     loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
@@ -207,7 +228,9 @@ def train_resnet_classifier():
             correct += (preds == labels).sum().item()
 
         acc = correct / len(dataset)
-        print(f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss:.4f}, Accuracy: {acc:.4f}")
+        print(
+            f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss:.4f}, Accuracy: {acc:.4f}"
+        )
 
     torch.save(model.state_dict(), "resnet18_patch_classifier.pth")
     print("[INFO] ResNet18 classifier training complete and saved.")
@@ -227,21 +250,27 @@ def extract_patches(base_dir="data", patch_size=512, level=0, stride=None):
     stride = stride or patch_size
 
     wsi_dir = os.path.join(os.getcwd(), base_dir, "camelyon16", "train", "img")
-    annot_dir = os.path.join(os.getcwd(), base_dir, "camelyon16", "masks", "annotations")
-    level_dir = os.path.join(os.getcwd(), base_dir, "camelyon16", "patches", f"level_{level}")
+    annot_dir = os.path.join(
+        os.getcwd(), base_dir, "camelyon16", "masks", "annotations"
+    )
+    level_dir = os.path.join(
+        os.getcwd(), base_dir, "camelyon16", "patches", f"level_{level}"
+    )
     os.makedirs(level_dir, exist_ok=True)
 
     for file in os.listdir(wsi_dir):
         if not file.endswith(".tif"):
             continue
 
-        prefix = file.replace('.tif', '')
+        prefix = file.replace(".tif", "")
         # Check if patches for this image already exist
         already_extracted = False
         for label in ["normal", "tumor"]:
             patch_save_dir = os.path.join(level_dir, label)
             if os.path.exists(patch_save_dir):
-                existing_patches = [f for f in os.listdir(patch_save_dir) if f.startswith(prefix)]
+                existing_patches = [
+                    f for f in os.listdir(patch_save_dir) if f.startswith(prefix)
+                ]
                 if len(existing_patches) > 0:
                     already_extracted = True
                     break
@@ -274,12 +303,14 @@ def extract_patches(base_dir="data", patch_size=512, level=0, stride=None):
         print(f"[INFO] Processing {file} at level {level} (size: {width}x{height})")
 
         patch_count = 0
-        for x in range(0, width - patch_size + 1, stride): # not overlapping patches and no padding
+        for x in range(
+            0, width - patch_size + 1, stride
+        ):  # not overlapping patches and no padding
             for y in range(0, height - patch_size + 1, stride):
                 patch = slide.read_region(
                     (int(x * downsample), int(y * downsample)),
                     level,
-                    (patch_size, patch_size)
+                    (patch_size, patch_size),
                 ).convert("RGB")
 
                 label = "normal"
@@ -300,25 +331,37 @@ def extract_patches(base_dir="data", patch_size=512, level=0, stride=None):
                 if patch_count % 100 == 0:
                     print(f"Extracted patches {patch_count} for {file}")
 
-        print(f"[INFO] Patch extraction complete for {file} at level {level}. Total patches: {patch_count}")
+        print(
+            f"[INFO] Patch extraction complete for {file} at level {level}. Total patches: {patch_count}"
+        )
+
 
 def extract_features(level=4):
     """
     Extract features from the patches using a ResNet18 model.
     """
-    transform = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    ])
-    
-    patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
+    transform = transforms.Compose(
+        [
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+
+    patch_dir = os.path.join(
+        os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
+    )
     dataset = PatchDataset(patch_dir, transform=transform)
     loader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False)
-    print(f"[INFO] Extracting features from patches at level {level} with patch directory: {patch_dir}, which exists: {os.path.exists(patch_dir)}")
-    print("[INFo] WSI images:", os.listdir(patch_dir) if os.path.exists(patch_dir) else "Not found")
+    print(
+        f"[INFO] Extracting features from patches at level {level} with patch directory: {patch_dir}, which exists: {os.path.exists(patch_dir)}"
+    )
+    print(
+        "[INFo] WSI images:",
+        os.listdir(patch_dir) if os.path.exists(patch_dir) else "Not found",
+    )
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ResNet18FeatureExtractor().to(device)
     model.eval()
 
@@ -334,15 +377,18 @@ def extract_features(level=4):
             labels.extend(lbls)
             paths.extend(img_paths)
     if not features:
-        print("[ERROR] No features were extracted. Check your patch directory and dataset.")
+        print(
+            "[ERROR] No features were extracted. Check your patch directory and dataset."
+        )
         return
     features = torch.cat(features, dim=0)  # (num_patches, 512)
 
-    np.save('patch_features.npy', features.numpy())
-    np.save('patch_labels.npy', np.array(labels))
-    with open('patch_paths.txt', 'w') as f:
+    np.save("patch_features.npy", features.numpy())
+    np.save("patch_labels.npy", np.array(labels))
+    with open("patch_paths.txt", "w") as f:
         for p in paths:
             f.write(f"{p}\n")
+
 
 def create_validation_set(base_dir="./data"):
     """
@@ -352,12 +398,17 @@ def create_validation_set(base_dir="./data"):
     dst_dir = os.path.join(base_dir, "camelyon16/val/img")
     os.makedirs(dst_dir, exist_ok=True)
 
-    normal_files = sorted([f for f in os.listdir(src_dir) if f.startswith("normal")])[:5]
+    normal_files = sorted([f for f in os.listdir(src_dir) if f.startswith("normal")])[
+        :5
+    ]
     tumor_files = sorted([f for f in os.listdir(src_dir) if f.startswith("tumor")])[:5]
 
     for f in normal_files + tumor_files:
         shutil.move(os.path.join(src_dir, f), os.path.join(dst_dir, f))
-    print(f"[INFO] Validation set created with {len(normal_files)} normal and {len(tumor_files)} tumor files.")
+    print(
+        f"[INFO] Validation set created with {len(normal_files)} normal and {len(tumor_files)} tumor files."
+    )
+
 
 def check_structure():
     """
@@ -368,19 +419,24 @@ def check_structure():
         "data/camelyon16/val/img",
         "data/camelyon16/test/img",
         "data/camelyon16/masks/annotations",
-        "data/camelyon16/patches/level_4/normal_001"
+        "data/camelyon16/patches/level_4/normal_001",
     ]
-    
+
     for path in expected_structure:
         if not os.path.exists(path):
             print(f"[ERROR] Missing expected directory: {path}")
             if path.endswith("normal_001"):
-                group_patches_by_slide(patch_root=os.path.join(os.getcwd(), "data", "camelyon16", "patches", "level_4"))
+                group_patches_by_slide(
+                    patch_root=os.path.join(
+                        os.getcwd(), "data", "camelyon16", "patches", "level_4"
+                    )
+                )
             return False
     print("[INFO] Directory structure is correct.")
     return True
 
-def prepare_data(): # TODO: WIP
+
+def prepare_data():  # TODO: WIP
     """
     Prepare data for training (e.g., preprocessing or augmentation).
     """
@@ -390,27 +446,53 @@ def prepare_data(): # TODO: WIP
     create_validation_set(base_dir="./data")
 
     # Extract masks
-    if not os.path.exists(os.path.join(os.getcwd(), "..", "data", "camelyon16", "masks", "lesion_annotations.zip")):
+    if not os.path.exists(
+        os.path.join(
+            os.getcwd(), "..", "data", "camelyon16", "masks", "lesion_annotations.zip"
+        )
+    ):
         print("[ERROR] Masks zip file not found. Please download the dataset first.")
         return
-    zip_path = os.path.join(os.getcwd(), "..", "data", "camelyon16", "masks", "lesion_annotations.zip")
-    extract_to = os.path.join(os.getcwd(), "..", "data", "camelyon16", "masks", "annotations")
+    zip_path = os.path.join(
+        os.getcwd(), "..", "data", "camelyon16", "masks", "lesion_annotations.zip"
+    )
+    extract_to = os.path.join(
+        os.getcwd(), "..", "data", "camelyon16", "masks", "annotations"
+    )
     extract_zip(zip_path, extract_to)
 
     print("[INFO] Data preparation completed.")
 
+
 def main():
     parser = argparse.ArgumentParser(description="Camelyon Dataset Processing")
-    parser.add_argument("--download", action="store_true", help="Download CAMELYON16 dataset")
-    parser.add_argument("--base_dir", type=str, default="./data", help="Base directory for downloaded files")
-    parser.add_argument("--remote", action="store_true", help="Execute on remote server")
+    parser.add_argument(
+        "--download", action="store_true", help="Download CAMELYON16 dataset"
+    )
+    parser.add_argument(
+        "--base_dir",
+        type=str,
+        default="./data",
+        help="Base directory for downloaded files",
+    )
+    parser.add_argument(
+        "--remote", action="store_true", help="Execute on remote server"
+    )
     parser.add_argument("-p", "--patch", action="store_true", help="Extract patches")
     parser.add_argument("-prep", "--prepare", action="store_true", help="Prepare data")
-    parser.add_argument("-val", "--validation", action="store_true", help="Create validation set")
-    parser.add_argument("-train", "--train", action="store_true", help="Train U-Net model")
+    parser.add_argument(
+        "-val", "--validation", action="store_true", help="Create validation set"
+    )
+    parser.add_argument(
+        "-train", "--train", action="store_true", help="Train U-Net model"
+    )
     parser.add_argument("-test", "--test", action="store_true", help="Test U-Net model")
-    parser.add_argument("--extract_features", action="store_true", help="Extract features from patches")
-    parser.add_argument("--check_structure", action="store_true", help="Check directory structure")
+    parser.add_argument(
+        "--extract_features", action="store_true", help="Extract features from patches"
+    )
+    parser.add_argument(
+        "--check_structure", action="store_true", help="Check directory structure"
+    )
 
     args = parser.parse_args()
 
@@ -428,7 +510,7 @@ def main():
         extract_features()
     if args.check_structure:
         check_structure()
-    
+
 
 if __name__ == "__main__":
     main()
