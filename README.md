@@ -16,47 +16,132 @@ HiPAC — Hierarchical Patch-based Adaptive Classifier
 
 ## Usage
 
-### 1. Download Dataset
+All commands are run from the root of the repository:
 
-- To download the CAMELYON16 dataset:
-    ```sh
-    python src/main.py --download --remote
-    ```
-    - `--remote`: Downloads all files (set to `False` for testing to download only one file).
+```sh
+python src/main.py [OPTIONS]
+```
 
-### 2. Extract Patches
+### Options and Flags
 
-- Extract patches from WSIs:
+- `--download`  
+  Download the CAMELYON16 dataset.
+
+- `--base_dir BASE_DIR`  
+  Set the base directory for downloaded files (default: `./data`).
+
+- `--remote`  
+  Download all files (default downloads only a subset for testing).
+
+- `-p`, `--patch`  
+  Extract patches from WSIs.
+
+- `--patch_level LEVEL`  
+  WSI level for patch extraction (`0`, `1`, `2`, `3`, or `'all'` for all levels).  
+  - Level 0: 1792x1792  
+  - Level 1: 896x896  
+  - Level 2: 448x448  
+  - Level 3: 224x224  
+  - Example:  
     ```sh
-    python src/main.py --patch
+    python src/main.py --patch --patch_level 0
+    python src/main.py --patch --patch_level all
     ```
 
-### 3. Prepare Data
+- `-prep`, `--prepare`  
+  Prepare data (create validation set, extract masks, etc).
 
-- Preprocess or augment data:
-    ```sh
-    python src/main.py --prep
-    ```
+- `-val`, `--validation`  
+  Create a validation set (5 normal + 5 tumor images).
 
-### 4. Create a validation set
-    ```sh
-    python src/main.py --val
-    ```
+- `-train`, `--train`  
+  Train a ResNet18 classifier on extracted patches.
 
-### 5. Extract feature vectors from patches using ResNet18.
-    ```sh
-    python src/main.py --extract_features
-    ```
-### 6. Check Structure
-- Check if the directory structure is correct. If not, creates the correct one.
-    ```sh
-    python src/main.py --check_structure
-    ```
-### 7. Train
-- Train a ResNet18 classifier on extracted patches.
-    ```sh
-    python src/main.py --train
-    ```
+- `-test`, `--test`  
+  Test the U-Net model (if implemented).
+
+- `--extract_features`  
+  Extract feature vectors from patches using ResNet18.
+
+- `--check_structure`  
+  Check if the directory structure is correct.
+
+---
+
+### Example Workflows
+
+**Download a small subset for testing:**
+```sh
+python src/main.py --download
+```
+
+**Download the full dataset:**
+```sh
+python src/main.py --download --remote
+```
+
+**Extract patches at a specific level:**
+```sh
+python src/main.py --patch --patch_level 1
+```
+
+**Extract patches at all levels:**
+```sh
+python src/main.py --patch --patch_level all
+```
+
+**Prepare data (validation set, masks):**
+```sh
+python src/main.py --prep
+```
+
+**Create validation set only:**
+```sh
+python src/main.py --val
+```
+
+**Train ResNet18 classifier:**
+```sh
+python src/main.py --train
+```
+
+**Extract features from patches:**
+```sh
+python src/main.py --extract_features
+```
+
+**Check directory structure:**
+```sh
+python src/main.py --check_structure
+```
+
+---
+
+## Directory Structure
+
+```
+data/
+└── camelyon16/
+    ├── train/
+    │   └── img/
+    ├── val/
+    │   └── img/
+    ├── test/
+    │   └── img/
+    ├── masks/
+    │   ├── lesion_annotations.zip
+    │   └── annotations/
+    └── patches/
+        └── level_0/
+            ├── normal_001/
+            ├── tumor_001/
+            └── ...
+        └── level_1/
+        └── level_2/
+        └── level_3/
+```
+
+---
 
 ## Configuration
 
