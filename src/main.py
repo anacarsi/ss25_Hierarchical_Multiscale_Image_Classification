@@ -5,7 +5,7 @@ import requests
 from tqdm import tqdm
 import torch
 from torch.utils.data import DataLoader
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageOps
 import xml.etree.ElementTree as ET
 from torchvision import transforms
 from models.resnet import ResNet18FeatureExtractor
@@ -271,17 +271,21 @@ def extract_patches(base_dir="data", patch_size=224, level=3, stride=None, pad=T
             continue
 
         prefix = file.replace(".tif", "")
+        # Save patches directly into a folder for each WSI and label
+        for label in ["normal", "tumor"]:
+            patch_save_dir = os.path.join(level_dir, f"{prefix}", label)
+            os.makedirs(patch_save_dir, exist_ok=True)
+
         # Check if patches for this image already exist
         already_extracted = False
         for label in ["normal", "tumor"]:
-            patch_save_dir = os.path.join(level_dir, label)
-            if os.path.exists(patch_save_dir):
-                existing_patches = [
-                    f for f in os.listdir(patch_save_dir) if f.startswith(prefix)
-                ]
-                if len(existing_patches) > 0:
-                    already_extracted = True
-                    break
+            patch_save_dir = os.path.join(level_dir, f"{prefix}", label)
+            existing_patches = [
+                f for f in os.listdir(patch_save_dir) if f.startswith(prefix)
+            ]
+            if len(existing_patches) > 0:
+                already_extracted = True
+                break
         if already_extracted:
             print(f"[INFO] Patches for {file} already extracted, skipping.")
             continue
@@ -325,23 +329,26 @@ def extract_patches(base_dir="data", patch_size=224, level=3, stride=None, pad=T
         patch_count = 0
         for x in range(0, padded_width, stride):
             for y in range(0, padded_height, stride):
-                # If patch goes beyond original image, pad with white
+                # Only process if the top-left corner is inside the original image
+                if x >= width or y >= height:
+                    continue
+
+                patch_w = min(patch_size, width - x)
+                patch_h = min(patch_size, height - y)
+                if patch_w <= 0 or patch_h <= 0:
+                    continue
+
                 region = slide.read_region(
                     (int(x * downsample), int(y * downsample)),
                     level,
-                    (patch_size, patch_size),
+                    (patch_w, patch_h),
                 ).convert("RGB")
-                if x + patch_size > width or y + patch_size > height:
-                    region = Image.new("RGB", (patch_size, patch_size), (255, 255, 255)).copy()
-                    region_part = slide.read_region(
-                        (int(x * downsample), int(y * downsample)),
-                        level,
-                        (
-                            min(patch_size, width - x),
-                            min(patch_size, height - y),
-                        ),
-                    ).convert("RGB")
-                    region.paste(region_part, (0, 0))
+
+                # If patch is smaller than patch_size (at border), pad it to patch_size
+                if patch_w < patch_size or patch_h < patch_size:
+                    padded_region = Image.new("RGB", (patch_size, patch_size), (255, 255, 255))
+                    padded_region.paste(region, (0, 0))
+                    region = padded_region
 
                 label = "normal"
                 if mask:
@@ -353,7 +360,7 @@ def extract_patches(base_dir="data", patch_size=224, level=3, stride=None, pad=T
                 if np.mean(patch_array) > 240:  # too white (empty tissue)
                     continue
 
-                patch_save_dir = os.path.join(level_dir, label)
+                patch_save_dir = os.path.join(level_dir, f"{prefix}", label)
                 os.makedirs(patch_save_dir, exist_ok=True)
                 patch_name = f"{prefix}_x{x}_y{y}.png"
                 region.save(os.path.join(patch_save_dir, patch_name))

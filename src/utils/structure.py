@@ -27,8 +27,3 @@ def group_patches_by_slide(patch_root="data/camelyon16/patches/level_0"):
 
     print(f"[INFO] Grouping complete.")
 
-
-patch_directory = os.path.join(
-    os.getcwd(), "..", "data", "camelyon16", "patches", "level_4"
-)
-group_patches_by_slide(patch_root=patch_directory)
