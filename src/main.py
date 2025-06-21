@@ -9,7 +9,12 @@ from PIL import Image, ImageDraw
 import xml.etree.ElementTree as ET
 from torchvision import transforms
 from models.resnet import ResNet18FeatureExtractor
-
+""""
+os.add_dll_directory(
+    r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
+)
+"""
+import openslide
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from models.resnet import ResNet18Classifier
 from datasets.patch_dataset import PatchDataset
@@ -20,11 +25,7 @@ import shutil
 import torch.nn as nn
 
 # TODO: add dll directory for OpenSlide avoiding giving specific path
-"""
-os.add_dll_directory(
-    r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
-)
-"""
+
 import zipfile
 from PIL import Image
 
@@ -238,18 +239,23 @@ def train_resnet_classifier():
     print("[INFO] ResNet18 classifier training complete and saved.")
 
 
-def extract_patches(base_dir="data", patch_size=512, level=0, stride=None):
+def extract_patches(base_dir="data", patch_size=224, level=3, stride=None, pad=True):
     """
     Extract patches from WSIs at a specified level, apply mask overlays, and save tumor vs normal labels.
     Only extracts patches if they have not already been extracted for a given image.
+    Parameters:
+    - base_dir: str, base directory for the dataset.
+    - patch_size: int, size of the patches to extract.
+    - level: int, level of the WSI to extract patches from.
+    - stride: int, stride for patch extraction.
+    - pad: bool, if True, pad the image to cover all regions.
     """
-    import openslide
-    import numpy as np
-    from PIL import Image
-    import os
-
     print(f"[INFO] Extracting patches at level {level}...")
     stride = stride or patch_size
+
+    # Set patch size according to level
+    patch_sizes = {0: 1792, 1: 896, 2: 448, 3: 224}
+    patch_size = patch_sizes.get(level, 224)
 
     wsi_dir = os.path.join(os.getcwd(), base_dir, "camelyon16", "train", "img")
     annot_dir = os.path.join(
@@ -292,28 +298,50 @@ def extract_patches(base_dir="data", patch_size=512, level=0, stride=None):
         downsample = slide.level_downsamples[level]
         width, height = slide.level_dimensions[level]
 
+        # Calculate padded size if needed
+        if pad:
+            pad_w = (patch_size - width % patch_size) % patch_size
+            pad_h = (patch_size - height % patch_size) % patch_size
+            padded_width = width + pad_w
+            padded_height = height + pad_h
+        else:
+            padded_width = width
+            padded_height = height
+
         # Load and render XML mask
         mask = None
         if os.path.exists(xml_path):
             try:
                 mask = parse_xml_mask(xml_path, (width, height), downsample)
+                if pad and (pad_w > 0 or pad_h > 0):
+                    mask = ImageOps.expand(mask, (0, 0, pad_w, pad_h), fill=0)
             except Exception as e:
                 print(f"[WARNING] Failed to parse XML for {file}: {e}")
         else:
             print(f"[INFO] No annotation found for {file}, treating as normal.")
 
-        print(f"[INFO] Processing {file} at level {level} (size: {width}x{height})")
+        print(f"[INFO] Processing {file} at level {level} (size: {width}x{height}, padded: {padded_width}x{padded_height})")
 
         patch_count = 0
-        for x in range(
-            0, width - patch_size + 1, stride
-        ):  # not overlapping patches and no padding
-            for y in range(0, height - patch_size + 1, stride):
-                patch = slide.read_region(
+        for x in range(0, padded_width, stride):
+            for y in range(0, padded_height, stride):
+                # If patch goes beyond original image, pad with white
+                region = slide.read_region(
                     (int(x * downsample), int(y * downsample)),
                     level,
                     (patch_size, patch_size),
                 ).convert("RGB")
+                if x + patch_size > width or y + patch_size > height:
+                    region = Image.new("RGB", (patch_size, patch_size), (255, 255, 255)).copy()
+                    region_part = slide.read_region(
+                        (int(x * downsample), int(y * downsample)),
+                        level,
+                        (
+                            min(patch_size, width - x),
+                            min(patch_size, height - y),
+                        ),
+                    ).convert("RGB")
+                    region.paste(region_part, (0, 0))
 
                 label = "normal"
                 if mask:
@@ -321,14 +349,14 @@ def extract_patches(base_dir="data", patch_size=512, level=0, stride=None):
                     if np.any(np.array(mask_patch) > 0):
                         label = "tumor"
 
-                patch_array = np.array(patch)
+                patch_array = np.array(region)
                 if np.mean(patch_array) > 240:  # too white (empty tissue)
                     continue
 
                 patch_save_dir = os.path.join(level_dir, label)
                 os.makedirs(patch_save_dir, exist_ok=True)
                 patch_name = f"{prefix}_x{x}_y{y}.png"
-                patch.save(os.path.join(patch_save_dir, patch_name))
+                region.save(os.path.join(patch_save_dir, patch_name))
                 patch_count += 1
                 if patch_count % 100 == 0:
                     print(f"Extracted patches {patch_count} for {file}")
@@ -421,16 +449,16 @@ def check_structure():
         "data/camelyon16/val/img",
         "data/camelyon16/test/img",
         "data/camelyon16/masks/annotations",
-        "data/camelyon16/patches/level_4/normal_001",
+        "data/camelyon16/patches/level_3/normal_002",
     ]
 
     for path in expected_structure:
         if not os.path.exists(path):
             print(f"[ERROR] Missing expected directory: {path}")
-            if path.endswith("normal_001"):
+            if path.endswith("normal_002"):
                 group_patches_by_slide(
                     patch_root=os.path.join(
-                        os.getcwd(), "data", "camelyon16", "patches", "level_4"
+                        os.getcwd(), "data", "camelyon16", "patches", "level_3"
                     )
                 )
             return False
@@ -480,7 +508,15 @@ def main():
     parser.add_argument(
         "--remote", action="store_true", help="Execute on remote server"
     )
-    parser.add_argument("-p", "--patch", action="store_true", help="Extract patches")
+    parser.add_argument(
+        "-p", "--patch", action="store_true", help="Extract patches"
+    )
+    parser.add_argument(
+        "--patch_level",
+        type=str,
+        default="3",
+        help="WSI level for patch extraction (0, 1, 2, 3, or 'all' for all levels)",
+    )
     parser.add_argument("-prep", "--prepare", action="store_true", help="Prepare data")
     parser.add_argument(
         "-val", "--validation", action="store_true", help="Create validation set"
@@ -501,7 +537,11 @@ def main():
     if args.download:
         download_dataset(args.base_dir, args.remote)
     if args.patch:
-        extract_patches()
+        if args.patch_level == "all":
+            for lvl in [0, 1, 2, 3]:
+                extract_patches(level=lvl)
+        else:
+            extract_patches(level=int(args.patch_level))
     if args.prepare:
         prepare_data()
     if args.validation:
