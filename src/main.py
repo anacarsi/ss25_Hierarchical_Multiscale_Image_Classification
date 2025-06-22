@@ -4,37 +4,33 @@ import argparse
 import requests
 from tqdm import tqdm
 import torch
+import torch.nn as nn
+from torch.optim import Adam
+import numpy as np
+import shutil
 from torch.utils.data import DataLoader
 from PIL import Image, ImageDraw, ImageOps
 import xml.etree.ElementTree as ET
 from torchvision import transforms
-from models.resnet import ResNet18FeatureExtractor
-""""
+
 os.add_dll_directory(
     r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
 )
-"""
+
 import openslide
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from models.resnet import ResNet18Classifier
+from models.resnet import ResNet18Classifier, ResNet18FeatureExtractor
 from datasets.patch_dataset import PatchDataset
+from utils.evaluation_FROC import computeEvaluationMask, computeITCList, readCSVContent, compute_FP_TP_Probs, computeFROC, plotFROC
 from utils.structure import group_patches_by_slide
-from torch.optim import Adam
-import numpy as np
-import shutil
-import torch.nn as nn
-
-# TODO: add dll directory for OpenSlide avoiding giving specific path
-
 import zipfile
 from PIL import Image
 
 # Base URL for the CAMELYON16 dataset
 BASE_URL = "https://s3.ap-northeast-1.wasabisys.com/gigadb-datasets/live/pub/10.5524/100001_101000/100439/"
 
-# Patches size
+# Patches size (not directly used in the download logic, but kept for context)
 PATCH_SIZE_LEVEL_0 = 1792
-
 
 # File paths for CAMELYON16
 CAMELYON16_FILES = {
@@ -57,7 +53,8 @@ def download_file(url, destination_path):
     Downloads a file from a URL to a destination path with a progress bar.
     """
     try:
-        print(f"[INFO] Downloading: {url}")
+        print(f"[INFO] Downloading: {url} into {destination_path}")
+        os.makedirs(os.path.dirname(destination_path), exist_ok=True) # Ensure destination dir exists
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
             total_size = int(r.headers.get("content-length", 0))
@@ -76,97 +73,65 @@ def download_file(url, destination_path):
     except requests.exceptions.RequestException as e:
         print(f"[ERROR] Failed to download {url}: {e}")
         return False
+    except Exception as e:
+        print(f"[ERROR] An unexpected error occurred: {e}")
+        return False
 
 
-def download_files(base_dir, file_groups, remote=True):
-    """
-    Download and manage the required dataset files (with strict size limits).
-    """
-    limits = {"train_normal": 35, "train_tumor": 35, "test_images": 10}
-
-    for group_name, files in file_groups.items():
-        group_dir = os.path.join(base_dir, group_name)
-        os.makedirs(group_dir, exist_ok=True)
-
-        # Categorize files
-        categorized_files = {
-            "train_normal": [],
-            "train_tumor": [],
-            "test_images": [],
-            "masks": [],
-            "evaluation": [],
-        }
-        for f in files:
-            fname = os.path.basename(f)
-            # Save lesion_annotations.zip in train/mask or in test/mask
-            if fname.endswith(".zip") and "lesion_annotations" in fname:
-                if "training" in f:
-                    mask_dir = os.path.join(base_dir, "train", "mask")
-                elif "testing" in f:
-                    mask_dir = os.path.join(base_dir, "camelyon16", "test", "mask")
-                else:
-                    mask_dir = group_dir
-                os.makedirs(mask_dir, exist_ok=True)
-                destination_path = os.path.join(mask_dir, fname)
-                if not os.path.exists(destination_path):
-                    url = BASE_URL + f
-                    download_file(url, destination_path)
-                categorized_files["masks"].append(destination_path)
-                continue
-            elif fname.endswith(".zip") and "evaluation_python" in fname:
-                categorized_files["evaluation"].append(f)
-            elif fname.startswith("normal"):
-                categorized_files["train_normal"].append(f)
-            elif fname.startswith("tumor"):
-                categorized_files["train_tumor"].append(f)
-            elif fname.startswith("test") and fname.endswith(".tif"):
-                categorized_files["test_images"].append(f)
-
-        # Process each category
-        for category, file_list in categorized_files.items():
-            # Only apply limits to image categories
-            limit = limits.get(category, len(file_list))
-            file_list = file_list[:limit]
-
-            # Only download evaluation script if not remote
-            if category == "evaluation" and remote:
-                continue
-
-            # Only download missing files
-            if not remote and category in ["train_normal", "train_tumor", "test_images"]:
-                file_list = file_list[:1]  # For local testing, only download one file
-            for file_path in file_list:
-                # Already handled masks above
-                if category == "masks":
-                    continue
-                file_name = os.path.basename(file_path)
-                destination_path = os.path.join(group_dir, file_name)
-                if os.path.exists(destination_path):
-                    continue
-                url = BASE_URL + file_path
-                download_file(url, destination_path)
-
-
-def download_dataset(base_dir="./data", remote=False):
+def download_dataset(remote=False):
     """
     Downloads the CAMELYON16 dataset, including training, testing, and mask files.
 
     Parameters:
-    - base_dir: str, directory to save the downloaded files.
     - remote: bool, if True, download all files; if False, download only one file for testing.
     """
-    camelyon_dir = os.path.join(base_dir, "camelyon16")
-    os.makedirs(camelyon_dir, exist_ok=True)
+    camelyon_dir = os.path.join(os.getcwd(), "data", "camelyon16")
+    
+    # Define the target directories
+    train_img_dir = os.path.join(camelyon_dir, "train", "img")
+    test_img_dir = os.path.join(camelyon_dir, "test", "img")
+    train_mask_dir = os.path.join(camelyon_dir, "train", "mask")
+    test_mask_dir = os.path.join(camelyon_dir, "test", "mask")
 
-    # Define file groups for training, testing, and masks
-    file_groups = {
-        "train/img": CAMELYON16_FILES["train_normal"]
-        + CAMELYON16_FILES["train_tumor"],  # Both normal and tumor images go to img
-        "test/img": CAMELYON16_FILES["test_images"],
-        "masks": CAMELYON16_FILES["train_masks"] + CAMELYON16_FILES["test_masks"],
+    # Mapping of CAMELYON16_FILES keys to their target directories
+    download_map = {
+        "train_normal": train_img_dir,
+        "train_tumor": train_img_dir,
+        "test_images": test_img_dir,
+        "train_masks": train_mask_dir,
+        "test_masks": test_mask_dir,
     }
 
-    download_files(camelyon_dir, file_groups, remote)
+    # Apply limits for non-remote mode
+    limits = {"train_normal": 35, "train_tumor": 35, "test_images": 10}
+
+    for file_type, target_dir in download_map.items():
+        files_to_download = CAMELYON16_FILES[file_type]
+
+        # Apply limits based on file type
+        if file_type in limits:
+            files_to_download = files_to_download[:limits[file_type]]
+        
+        # In non-remote mode, only download one image file per category
+        if not remote and file_type in ["train_normal", "train_tumor", "test_images"]:
+            files_to_download = files_to_download[:1]
+        
+        for remote_file_path in files_to_download:
+            file_name = os.path.basename(remote_file_path)
+            
+            # Skip evaluation_python.zip if remote=True, as per original logic's intent (though it was inverted)
+            if "evaluation_python" in file_name and remote:
+                print(f"[INFO] Skipping download of {file_name} in remote mode.")
+                continue
+
+            destination_path = os.path.join(target_dir, file_name)
+
+            if os.path.exists(destination_path):
+                print(f"[INFO] Skipping: {destination_path} already exists.")
+                continue
+            
+            url = BASE_URL + remote_file_path
+            download_file(url, destination_path)
 
 
 def extract_zip(zip_path, extract_to):
@@ -176,11 +141,22 @@ def extract_zip(zip_path, extract_to):
     - zip_path: str, path to the zip file to extract.
     - extract_to: str, directory to extract the contents to.
     """
-    if not os.path.exists(extract_to):
-        os.makedirs(extract_to)
+    # Check if the path extract_to exists. If yes, check contains all elements from tumor_001.xml to tumor_050.xml.
+    # If it does not contain them, delete the directory and extract again. If exists and contains all elements, skip extraction.
+    expected_xmls = [f"tumor_{i:03d}.xml" for i in range(1, 51)]
+
+    if os.path.exists(extract_to):
+        existing_xmls = set(os.listdir(extract_to))
+        if all(xml in existing_xmls for xml in expected_xmls):
+            print(f"[INFO] Directory {extract_to} already exists and contains all expected XMLs. Skipping extraction.")
+            return
+        else:
+            print(f"[WARNING] Directory {extract_to} exists but is missing some XMLs. Re-extracting...")
+            shutil.rmtree(extract_to)
+            os.makedirs(extract_to)
     else:
-        print(f"[INFO] Directory {extract_to} already exists. Skipping extraction.")
-        return
+        os.makedirs(extract_to)
+
     with zipfile.ZipFile(zip_path, "r") as zip_ref:
         zip_ref.extractall(extract_to)
     print(f"[INFO] Extracted {zip_path} to {extract_to}")
@@ -256,12 +232,11 @@ def train_resnet_classifier():
     print("[INFO] ResNet18 classifier training complete and saved.")
 
 
-def extract_patches(base_dir="data", patch_size=224, level=3, stride=None, pad=True):
+def extract_patches(patch_size=224, level=3, stride=None, pad=True):
     """
     Extract patches from WSIs at a specified level, apply mask overlays, and save tumor vs normal labels.
     Only extracts patches if they have not already been extracted for a given image.
     Parameters:
-    - base_dir: str, base directory for the dataset.
     - patch_size: int, size of the patches to extract.
     - level: int, level of the WSI to extract patches from.
     - stride: int, stride for patch extraction.
@@ -274,19 +249,21 @@ def extract_patches(base_dir="data", patch_size=224, level=3, stride=None, pad=T
     patch_sizes = {0: 1792, 1: 896, 2: 448, 3: 224}
     patch_size = patch_sizes.get(level, 224)
 
-    wsi_dir = os.path.join(os.getcwd(), base_dir, "camelyon16", "train", "img")
-    annot_dir = os.path.join(
-        os.getcwd(), base_dir, "camelyon16", "masks", "annotations"
+    wsi_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img")
+    annot_dir_train = os.path.join(
+        os.getcwd(), "data", "camelyon16", "train", "mask"
+    )
+    annot_dir_test = os.path.join(
+        os.getcwd(), "data", "camelyon16", "test", "mask"
     )
     level_dir = os.path.join(
-        os.getcwd(), base_dir, "camelyon16", "patches", f"level_{level}"
+        os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
     )
     os.makedirs(level_dir, exist_ok=True)
 
     for file in os.listdir(wsi_dir):
         if not file.endswith(".tif"):
             continue
-
         prefix = file.replace(".tif", "")
 
         # Check if patches for this image already exist
@@ -307,7 +284,10 @@ def extract_patches(base_dir="data", patch_size=224, level=3, stride=None, pad=T
 
         wsi_path = os.path.join(wsi_dir, file)
         xml_name = file.replace(".tif", ".xml")
-        xml_path = os.path.join(annot_dir, xml_name)
+        if file.startswith("test_"):
+            xml_path = os.path.join(annot_dir_test, xml_name)
+        elif file.startswith("normal_") or file.startswith("tumor_"):
+            xml_path = os.path.join(annot_dir_train, xml_name)
         print(f"[DEBUG] Processing file: {wsi_path} with XML: {xml_path}")
         try:
             slide = openslide.OpenSlide(wsi_path)
@@ -388,7 +368,7 @@ def extract_patches(base_dir="data", patch_size=224, level=3, stride=None, pad=T
         )
 
 
-def extract_features(level=4):
+def extract_features(level=3):
     """
     Extract features from the patches using a ResNet18 model.
     Parameters:
@@ -405,51 +385,69 @@ def extract_features(level=4):
     patch_dir = os.path.join(
         os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
     )
+    
+    if not os.path.exists(patch_dir) or not os.listdir(patch_dir):
+        print(f"[ERROR] Patch directory '{patch_dir}' does not exist or is empty. Please run patch extraction first.")
+        return
+
     dataset = PatchDataset(patch_dir, transform=transform)
-    loader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=False)
+    # Use higher batch size and num_workers for feature extraction as it's typically I/O bound
+    loader = torch.utils.data.DataLoader(dataset, batch_size=128, shuffle=False, num_workers=os.cpu_count() or 1) 
+    
     print(
         f"[INFO] Extracting features from patches at level {level} with patch directory: {patch_dir}, which exists: {os.path.exists(patch_dir)}"
     )
     print(
-        "[INFo] WSI images:",
-        os.listdir(patch_dir) if os.path.exists(patch_dir) else "Not found",
+        "[INFO] Listing first 5 subdirectories in patch_dir:",
+        os.listdir(patch_dir)[:5] if os.path.exists(patch_dir) else "Not found",
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ResNet18FeatureExtractor().to(device)
-    model.eval()
+    # If you trained a model, you might want to load its weights here
+    # model.load_state_dict(torch.load("resnet18_patch_classifier.pth"), strict=False) # strict=False because of head removal
+    model.eval() # Set to evaluation mode
 
     features = []
     labels = []
     paths = []
 
     with torch.no_grad():
-        for imgs, lbls, img_paths in loader:
-            print("Batch size:", imgs.shape)
+        for batch_idx, (imgs, lbls, img_paths) in enumerate(tqdm(loader, desc="Extracting Features")):
+            # print("Batch size:", imgs.shape) # This can be too verbose in a loop
             feats = model(imgs.to(device))
             features.append(feats.cpu())
-            labels.extend(lbls)
+            labels.extend(lbls.tolist()) # Convert tensor to list for extend
             paths.extend(img_paths)
+    
     if not features:
         print(
-            "[ERROR] No features were extracted. Check your patch directory and dataset."
+            "[ERROR] No features were extracted. Check your patch directory and dataset. "
+            "It might be that PatchDataset found no images, or data loader was empty."
         )
         return
+        
     features = torch.cat(features, dim=0)  # (num_patches, 512)
 
-    np.save("patch_features.npy", features.numpy())
-    np.save("patch_labels.npy", np.array(labels))
-    with open("patch_paths.txt", "w") as f:
+    # Save features, labels, and paths
+    features_save_path = f"patch_features_{level}.npy"
+    labels_save_path = f"patch_labels_{level}.npy"
+    paths_save_path = f"patch_paths_{level}.txt"
+    
+    np.save(features_save_path, features.numpy())
+    np.save(labels_save_path, np.array(labels))
+    with open(paths_save_path, "w") as f:
         for p in paths:
             f.write(f"{p}\n")
+    print(f"[INFO] Features saved to {features_save_path}, labels to {labels_save_path}, paths to {paths_save_path}")
 
 
-def create_validation_set(base_dir="./data"):
+def create_validation_set():
     """
     Create validation set: exactly 10 files (5 normal + 5 tumor).
     """
-    src_dir = os.path.join(base_dir, "camelyon16/train/img")
-    dst_dir = os.path.join(base_dir, "camelyon16/val/img")
+    src_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img")
+    dst_dir = os.path.join(os.getcwd(), "data", "camelyon16", "val", "img")
     os.makedirs(dst_dir, exist_ok=True)
 
     normal_files = sorted([f for f in os.listdir(src_dir) if f.startswith("normal")])[
@@ -472,8 +470,9 @@ def check_structure():
         "data/camelyon16/train/img",
         "data/camelyon16/val/img",
         "data/camelyon16/test/img",
-        "data/camelyon16/masks/annotations",
-        "data/camelyon16/patches/level_3/normal_002",
+        "data/camelyon16/train/mask",
+        "data/camelyon16/test/mask",
+        "data/camelyon16/patches/level_3/normal_002", # to check expected patch struct
     ]
 
     for path in expected_structure:
@@ -497,14 +496,14 @@ def prepare_data():  # TODO: WIP
     print("[INFO] Preparing data...")
 
     # Create a validation set from the training data
-    create_validation_set(base_dir="./data")
+    create_validation_set()
 
     # Extract training masks
     train_zip = os.path.join(
         os.getcwd(), "data", "camelyon16", "train", "mask", "lesion_annotations.zip"
     )
     train_extract_to = os.path.join(
-        os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
+        os.getcwd(), "data", "camelyon16", "train", "mask"
     )
     if not os.path.exists(train_zip):
         print("[ERROR] Training masks zip file not found. Please download the dataset first.")
@@ -516,31 +515,38 @@ def prepare_data():  # TODO: WIP
         os.getcwd(), "data", "camelyon16", "test", "mask", "lesion_annotations.zip"
     )
     test_extract_to = os.path.join(
-        os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
+        os.getcwd(), "data", "camelyon16", "test", "mask"
     )
     if not os.path.exists(test_zip):
         print("[ERROR] Testing masks zip file not found. Please download the dataset first.")
     else:
         extract_zip(test_zip, test_extract_to)
 
+    """
+    if os.path.exists(train_zip):
+        os.remove(train_zip)
+        print(f"[INFO] Removed {train_zip}")
+    if os.path.exists(test_zip):
+        os.remove(test_zip)
+        print(f"[INFO] Removed {test_zip}")
+    """
     print("[INFO] Data preparation completed.")
 
 
-def images_downloaded(base_dir):
-    img_dir = os.path.join(base_dir, "camelyon16", "train", "img")
+def images_downloaded():
+    img_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img")
     return os.path.exists(img_dir) and len([f for f in os.listdir(img_dir) if f.endswith(".tif")]) > 0
 
-def patches_extracted(base_dir, patch_level):
-    patch_dir = os.path.join(base_dir, "camelyon16", "patches", f"level_{patch_level}")
+def patches_extracted(patch_level):
+    patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{patch_level}")
     return os.path.exists(patch_dir) and any(os.listdir(patch_dir))
 
-def features_extracted():
-    return os.path.exists("patch_features.npy") and os.path.exists("patch_labels.npy")
+def features_extracted(patch_level):
+    return os.path.exists(f"patch_features_{patch_level}.npy") and os.path.exists(f"patch_labels_{patch_level}.npy")
 
 def main():
     parser = argparse.ArgumentParser(description="Camelyon Dataset Processing")
     parser.add_argument("--download", action="store_true", help="Download CAMELYON16 dataset")
-    parser.add_argument("--base_dir", type=str, default="./data", help="Base directory for downloaded files")
     parser.add_argument("--remote", action="store_true", help="Execute on remote server")
     parser.add_argument("-p", "--patch", action="store_true", help="Extract patches")
     parser.add_argument("--patch_level", type=str, default="3", help="WSI level for patch extraction (0, 1, 2, 3, or 'all' for all levels)")
@@ -550,39 +556,41 @@ def main():
     parser.add_argument("-test", "--test", action="store_true", help="Test U-Net model")
     parser.add_argument("--extract_features", action="store_true", help="Extract features from patches")
     parser.add_argument("--check_structure", action="store_true", help="Check directory structure")
+    parser.add_argument("--run_evaluation", action="store_true", help="Run CAMELYON16 evaluation script.")
+    
     args = parser.parse_args()
 
     # Download images
     if args.download:
-        download_dataset(args.base_dir, args.remote)
+        download_dataset(args.remote)
 
     # Extract patches
     if args.patch:
-        if not images_downloaded(args.base_dir):
+        if not images_downloaded():
             print("[ERROR] Images must be downloaded before extracting patches.")
             return
         if args.patch_level == "all":
             for lvl in [0, 1, 2, 3]:
-                extract_patches(base_dir=args.base_dir, level=lvl)
+                extract_patches(level=lvl)
         else:
-            extract_patches(base_dir=args.base_dir, level=int(args.patch_level))
+            extract_patches(level=int(args.patch_level))
 
     # Extract features
     if args.extract_features:
         # Check for patches at the requested level
         patch_levels = [0, 1, 2, 3] if args.patch_level == "all" else [int(args.patch_level)]
         for lvl in patch_levels:
-            if not patches_extracted(args.base_dir, lvl):
+            if not patches_extracted(lvl):
                 print(f"[ERROR] Patches must be extracted at level {lvl} before extracting features.")
                 return
         extract_features(level=int(args.patch_level) if args.patch_level != "all" else 3)  # default to level 3 if all
 
     # Train model
     if args.train:
-        if not images_downloaded(args.base_dir):
+        if not images_downloaded():
             print("[ERROR] Images must be downloaded before training.")
             return
-        if not patches_extracted(args.base_dir, 3):  # assuming level 3 for training
+        if not patches_extracted(patch_level=args.train_patch_level):
             print("[ERROR] Patches must be extracted before training.")
             return
         if not features_extracted():
@@ -593,12 +601,70 @@ def main():
     if args.prepare:
         prepare_data()
     if args.validation:
-        create_validation_set(args.base_dir)
+        create_validation_set()
     if args.test:
-        # Add similar checks if needed
         pass
     if args.check_structure:
         check_structure()
+
+    if args.run_evaluation:
+        """
+        Calculate False Positives (FPs), True Positives (TPs), and generates a Free-Response Receiver Operating Characteristic (FROC) curve. 
+        """
+        print("[INFO] Running CAMELYON16 evaluation script.")
+        mask_folder_for_eval = os.path.join(os.getcwd(), "data", "camelyon16", "test", "mask")
+        results_folder_for_eval = os.path.join(os.getcwd(), "models", "first_model", "model_predictions_csv") 
+        
+        if not os.path.exists(mask_folder_for_eval):
+            print(f"[ERROR] Evaluation mask folder '{mask_folder_for_eval}' not found. Please generate TIFF masks from XML annotations first.")
+        elif not os.path.exists(results_folder_for_eval):
+             print(f"[ERROR] Model results folder '{results_folder_for_eval}' not found. Please run your detection model first.")
+        else:
+            result_file_list = [each for each in os.listdir(results_folder_for_eval) if each.endswith('.csv')]
+            
+            EVALUATION_MASK_LEVEL = 5 
+            L0_RESOLUTION = 0.243 
+            
+            FROC_data = np.empty((4, len(result_file_list)), dtype=object)
+            FP_summary = np.empty((2, len(result_file_list)), dtype=object)
+            detection_summary = np.empty((2, len(result_file_list)), dtype=object)
+            
+            caseNum = 0    
+            for case in result_file_list:
+                print(f'Evaluating Performance on image: {case[0:-4]}')
+                sys.stdout.flush()
+                csvDIR = os.path.join(results_folder_for_eval, case)
+                Probs, Xcorr, Ycorr = readCSVContent(csvDIR) # is this function is updated for Python 3?
+                            
+                is_tumor = case[0:5].lower() == 'tumor' # Use .lower() for robustness    
+                if (is_tumor):
+                    maskDIR = os.path.join(mask_folder_for_eval, case[0:-4]) + '_Mask.tif'
+                    if not os.path.exists(maskDIR):
+                        print(f"[WARNING] Mask TIFF '{maskDIR}' not found for tumor case. Skipping.")
+                        continue # Skip to next case if mask is missing
+                    evaluation_mask = computeEvaluationMask(maskDIR, L0_RESOLUTION, EVALUATION_MASK_LEVEL) # Python 3?
+                    ITC_labels = computeITCList(evaluation_mask, L0_RESOLUTION, EVALUATION_MASK_LEVEL) 
+                else:
+                    evaluation_mask = 0 # Or a blank mask for consistency
+                    ITC_labels = []
+                        
+                FROC_data[0][caseNum] = case
+                FP_summary[0][caseNum] = case
+                detection_summary[0][caseNum] = case
+                
+                # Update compute_FP_TP_Probs for Python 3 division (//)
+                FROC_data[1][caseNum], FROC_data[2][caseNum], FROC_data[3][caseNum], detection_summary[1][caseNum], FP_summary[1][caseNum] = \
+                    compute_FP_TP_Probs(Ycorr, Xcorr, Probs, is_tumor, evaluation_mask, ITC_labels, EVALUATION_MASK_LEVEL)
+                caseNum += 1
+            
+            # Compute FROC curve 
+            if caseNum > 0: # Only compute if there were cases processed
+                total_FPs, total_sensitivity = computeFROC(FROC_data) # Update for Python 3
+                
+                # plot FROC curve
+                plotFROC(total_FPs, total_sensitivity) # Update for Python 3
+            else:
+                print("[WARNING] No cases processed for FROC evaluation.")
 
 if __name__ == "__main__":
     main()
