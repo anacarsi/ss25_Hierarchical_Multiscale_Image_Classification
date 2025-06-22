@@ -48,7 +48,7 @@ CAMELYON16_FILES = {
         f"CAMELYON16/testing/images/test_{i:03d}.tif" for i in range(1, 51)
     ],
     "train_masks": ["CAMELYON16/training/lesion_annotations.zip"],
-    "test_masks": ["CAMELYON16/testing/lesion_annotations.zip"],
+    "test_masks": ["CAMELYON16/testing/lesion_annotations.zip", "CAMELYON16/testing/evaluation/evaluation_python.zip"],
 }
 
 
@@ -78,7 +78,7 @@ def download_file(url, destination_path):
         return False
 
 
-def download_files(base_dir, file_groups, remote=False):
+def download_files(base_dir, file_groups, remote=True):
     """
     Download and manage the required dataset files (with strict size limits).
     """
@@ -89,37 +89,38 @@ def download_files(base_dir, file_groups, remote=False):
         os.makedirs(group_dir, exist_ok=True)
 
         # Categorize files
-        categorized_files = {"train_normal": [], "train_tumor": [], "test_images": []}
+        categorized_files = {
+            "train_normal": [],
+            "train_tumor": [],
+            "test_images": [],
+            "masks": [],
+            "evaluation": [],
+        }
         for f in files:
             fname = os.path.basename(f)
             if fname.startswith("normal"):
                 categorized_files["train_normal"].append(f)
             elif fname.startswith("tumor"):
                 categorized_files["train_tumor"].append(f)
-            elif fname.startswith("test"):
+            elif fname.startswith("test") and fname.endswith(".tif"):
                 categorized_files["test_images"].append(f)
+            elif fname.endswith(".zip") and "lesion_annotations" in fname:
+                categorized_files["masks"].append(f)
+            elif fname.endswith(".zip") and "evaluation_python" in fname:
+                categorized_files["evaluation"].append(f)
 
         # Process each category
         for category, file_list in categorized_files.items():
-            limit = limits[category]
-            file_list = file_list[:limit]  # restrict to desired number
+            # Only apply limits to image categories
+            limit = limits.get(category, len(file_list))
+            file_list = file_list[:limit]
 
-            existing = [
-                f
-                for f in os.listdir(group_dir)
-                if f.endswith(".tif") and category.split("_")[1] in f
-            ]
-            for f in existing:
-                try:
-                    num = int(f.split("_")[1].split(".")[0])
-                    if num > limit:
-                        print(f"[INFO] Deleting excess file: {f}")
-                        os.remove(os.path.join(group_dir, f))
-                except Exception as e:
-                    print(f"[WARNING] Failed to parse file number for {f}: {e}")
+            # Only download evaluation script if not remote
+            if category == "evaluation" and remote:
+                continue
 
             # Only download missing files
-            if not remote:
+            if not remote and category in ["train_normal", "train_tumor", "test_images"]:
                 file_list = file_list[:1]  # For local testing, only download one file
             for file_path in file_list:
                 file_name = os.path.basename(file_path)
@@ -271,21 +272,19 @@ def extract_patches(base_dir="data", patch_size=224, level=3, stride=None, pad=T
             continue
 
         prefix = file.replace(".tif", "")
-        # Save patches directly into a folder for each WSI and label
-        for label in ["normal", "tumor"]:
-            patch_save_dir = os.path.join(level_dir, f"{prefix}", label)
-            os.makedirs(patch_save_dir, exist_ok=True)
 
         # Check if patches for this image already exist
         already_extracted = False
-        for label in ["normal", "tumor"]:
-            patch_save_dir = os.path.join(level_dir, f"{prefix}", label)
-            existing_patches = [
-                f for f in os.listdir(patch_save_dir) if f.startswith(prefix)
-            ]
-            if len(existing_patches) > 0:
-                already_extracted = True
-                break
+        patch_save_dir = os.path.join(level_dir, prefix)
+        os.makedirs(patch_save_dir, exist_ok=True)
+        patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
+        region.save(os.path.join(patch_save_dir, patch_name))
+        existing_patches = [
+            f for f in os.listdir(patch_save_dir) if f.startswith(prefix)
+        ]
+        if len(existing_patches) > 0:
+            already_extracted = True
+            break
         if already_extracted:
             print(f"[INFO] Patches for {file} already extracted, skipping.")
             continue
@@ -360,9 +359,9 @@ def extract_patches(base_dir="data", patch_size=224, level=3, stride=None, pad=T
                 if np.mean(patch_array) > 240:  # too white (empty tissue)
                     continue
 
-                patch_save_dir = os.path.join(level_dir, f"{prefix}", label)
+                patch_save_dir = os.path.join(level_dir, prefix)
                 os.makedirs(patch_save_dir, exist_ok=True)
-                patch_name = f"{prefix}_x{x}_y{y}.png"
+                patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
                 region.save(os.path.join(patch_save_dir, patch_name))
                 patch_count += 1
                 if patch_count % 100 == 0:
@@ -376,6 +375,8 @@ def extract_patches(base_dir="data", patch_size=224, level=3, stride=None, pad=T
 def extract_features(level=4):
     """
     Extract features from the patches using a ResNet18 model.
+    Parameters:
+    - level: int, WSI level to extract patches from (0, 1, 2, 3).
     """
     transform = transforms.Compose(
         [
@@ -501,65 +502,79 @@ def prepare_data():  # TODO: WIP
     print("[INFO] Data preparation completed.")
 
 
+def images_downloaded(base_dir):
+    img_dir = os.path.join(base_dir, "camelyon16", "train", "img")
+    return os.path.exists(img_dir) and len([f for f in os.listdir(img_dir) if f.endswith(".tif")]) > 0
+
+def patches_extracted(base_dir, patch_level):
+    patch_dir = os.path.join(base_dir, "camelyon16", "patches", f"level_{patch_level}")
+    return os.path.exists(patch_dir) and any(os.listdir(patch_dir))
+
+def features_extracted():
+    return os.path.exists("patch_features.npy") and os.path.exists("patch_labels.npy")
+
 def main():
     parser = argparse.ArgumentParser(description="Camelyon Dataset Processing")
-    parser.add_argument(
-        "--download", action="store_true", help="Download CAMELYON16 dataset"
-    )
-    parser.add_argument(
-        "--base_dir",
-        type=str,
-        default="./data",
-        help="Base directory for downloaded files",
-    )
-    parser.add_argument(
-        "--remote", action="store_true", help="Execute on remote server"
-    )
-    parser.add_argument(
-        "-p", "--patch", action="store_true", help="Extract patches"
-    )
-    parser.add_argument(
-        "--patch_level",
-        type=str,
-        default="3",
-        help="WSI level for patch extraction (0, 1, 2, 3, or 'all' for all levels)",
-    )
+    parser.add_argument("--download", action="store_true", help="Download CAMELYON16 dataset")
+    parser.add_argument("--base_dir", type=str, default="./data", help="Base directory for downloaded files")
+    parser.add_argument("--remote", action="store_true", help="Execute on remote server")
+    parser.add_argument("-p", "--patch", action="store_true", help="Extract patches")
+    parser.add_argument("--patch_level", type=str, default="3", help="WSI level for patch extraction (0, 1, 2, 3, or 'all' for all levels)")
     parser.add_argument("-prep", "--prepare", action="store_true", help="Prepare data")
-    parser.add_argument(
-        "-val", "--validation", action="store_true", help="Create validation set"
-    )
-    parser.add_argument(
-        "-train", "--train", action="store_true", help="Train U-Net model"
-    )
+    parser.add_argument("-val", "--validation", action="store_true", help="Create validation set")
+    parser.add_argument("-train", "--train", action="store_true", help="Train U-Net model")
     parser.add_argument("-test", "--test", action="store_true", help="Test U-Net model")
-    parser.add_argument(
-        "--extract_features", action="store_true", help="Extract features from patches"
-    )
-    parser.add_argument(
-        "--check_structure", action="store_true", help="Check directory structure"
-    )
-
+    parser.add_argument("--extract_features", action="store_true", help="Extract features from patches")
+    parser.add_argument("--check_structure", action="store_true", help="Check directory structure")
     args = parser.parse_args()
 
+    # Download images
     if args.download:
         download_dataset(args.base_dir, args.remote)
+
+    # Extract patches
     if args.patch:
+        if not images_downloaded(args.base_dir):
+            print("[ERROR] Images must be downloaded before extracting patches.")
+            return
         if args.patch_level == "all":
             for lvl in [0, 1, 2, 3]:
-                extract_patches(level=lvl)
+                extract_patches(base_dir=args.base_dir, level=lvl)
         else:
-            extract_patches(level=int(args.patch_level))
+            extract_patches(base_dir=args.base_dir, level=int(args.patch_level))
+
+    # Extract features
+    if args.extract_features:
+        # Check for patches at the requested level
+        patch_levels = [0, 1, 2, 3] if args.patch_level == "all" else [int(args.patch_level)]
+        for lvl in patch_levels:
+            if not patches_extracted(args.base_dir, lvl):
+                print(f"[ERROR] Patches must be extracted at level {lvl} before extracting features.")
+                return
+        extract_features(level=int(args.patch_level) if args.patch_level != "all" else 3)  # default to level 3 if all
+
+    # Train model
+    if args.train:
+        if not images_downloaded(args.base_dir):
+            print("[ERROR] Images must be downloaded before training.")
+            return
+        if not patches_extracted(args.base_dir, 3):  # assuming level 3 for training
+            print("[ERROR] Patches must be extracted before training.")
+            return
+        if not features_extracted():
+            print("[ERROR] Features must be extracted before training.")
+            return
+        train_resnet_classifier()
+
     if args.prepare:
         prepare_data()
     if args.validation:
         create_validation_set(args.base_dir)
-    if args.train:
-        train_resnet_classifier()
-    if args.extract_features:
-        extract_features()
+    if args.test:
+        # Add similar checks if needed
+        pass
     if args.check_structure:
         check_structure()
-
 
 if __name__ == "__main__":
     main()
