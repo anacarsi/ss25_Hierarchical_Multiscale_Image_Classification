@@ -101,7 +101,7 @@ def download_files(base_dir, file_groups, remote=True):
             # Save lesion_annotations.zip in train/mask or in test/mask
             if fname.endswith(".zip") and "lesion_annotations" in fname:
                 if "training" in f:
-                    mask_dir = os.path.join(base_dir, "camelyon16", "train", "mask")
+                    mask_dir = os.path.join(base_dir, "train", "mask")
                 elif "testing" in f:
                     mask_dir = os.path.join(base_dir, "camelyon16", "test", "mask")
                 else:
