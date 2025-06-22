@@ -98,16 +98,29 @@ def download_files(base_dir, file_groups, remote=True):
         }
         for f in files:
             fname = os.path.basename(f)
-            if fname.startswith("normal"):
+            # Save lesion_annotations.zip in train/mask or in test/mask
+            if fname.endswith(".zip") and "lesion_annotations" in fname:
+                if "training" in f:
+                    mask_dir = os.path.join(base_dir, "camelyon16", "train", "mask")
+                elif "testing" in f:
+                    mask_dir = os.path.join(base_dir, "camelyon16", "test", "mask")
+                else:
+                    mask_dir = group_dir
+                os.makedirs(mask_dir, exist_ok=True)
+                destination_path = os.path.join(mask_dir, fname)
+                if not os.path.exists(destination_path):
+                    url = BASE_URL + f
+                    download_file(url, destination_path)
+                categorized_files["masks"].append(destination_path)
+                continue
+            elif fname.endswith(".zip") and "evaluation_python" in fname:
+                categorized_files["evaluation"].append(f)
+            elif fname.startswith("normal"):
                 categorized_files["train_normal"].append(f)
             elif fname.startswith("tumor"):
                 categorized_files["train_tumor"].append(f)
             elif fname.startswith("test") and fname.endswith(".tif"):
                 categorized_files["test_images"].append(f)
-            elif fname.endswith(".zip") and "lesion_annotations" in fname:
-                categorized_files["masks"].append(f)
-            elif fname.endswith(".zip") and "evaluation_python" in fname:
-                categorized_files["evaluation"].append(f)
 
         # Process each category
         for category, file_list in categorized_files.items():
@@ -123,6 +136,9 @@ def download_files(base_dir, file_groups, remote=True):
             if not remote and category in ["train_normal", "train_tumor", "test_images"]:
                 file_list = file_list[:1]  # For local testing, only download one file
             for file_path in file_list:
+                # Already handled masks above
+                if category == "masks":
+                    continue
                 file_name = os.path.basename(file_path)
                 destination_path = os.path.join(group_dir, file_name)
                 if os.path.exists(destination_path):
@@ -483,21 +499,29 @@ def prepare_data():  # TODO: WIP
     # Create a validation set from the training data
     create_validation_set(base_dir="./data")
 
-    # Extract masks
-    if not os.path.exists(
-        os.path.join(
-            os.getcwd(), "..", "data", "camelyon16", "masks", "lesion_annotations.zip"
-        )
-    ):
-        print("[ERROR] Masks zip file not found. Please download the dataset first.")
-        return
-    zip_path = os.path.join(
-        os.getcwd(), "..", "data", "camelyon16", "masks", "lesion_annotations.zip"
+    # Extract training masks
+    train_zip = os.path.join(
+        os.getcwd(), "data", "camelyon16", "train", "mask", "lesion_annotations.zip"
     )
-    extract_to = os.path.join(
-        os.getcwd(), "..", "data", "camelyon16", "masks", "annotations"
+    train_extract_to = os.path.join(
+        os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
     )
-    extract_zip(zip_path, extract_to)
+    if not os.path.exists(train_zip):
+        print("[ERROR] Training masks zip file not found. Please download the dataset first.")
+    else:
+        extract_zip(train_zip, train_extract_to)
+
+    # Extract testing masks
+    test_zip = os.path.join(
+        os.getcwd(), "data", "camelyon16", "test", "mask", "lesion_annotations.zip"
+    )
+    test_extract_to = os.path.join(
+        os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
+    )
+    if not os.path.exists(test_zip):
+        print("[ERROR] Testing masks zip file not found. Please download the dataset first.")
+    else:
+        extract_zip(test_zip, test_extract_to)
 
     print("[INFO] Data preparation completed.")
 
