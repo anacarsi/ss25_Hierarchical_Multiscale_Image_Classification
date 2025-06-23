@@ -10,7 +10,7 @@ import numpy as np
 import shutil
 from torch.utils.data import DataLoader
 from PIL import Image, ImageDraw, ImageOps
-import xml.etree.ElementTree as ET
+from lxml import etree
 from torchvision import transforms
 
 os.add_dll_directory(
@@ -163,31 +163,47 @@ def extract_zip(zip_path, extract_to):
 
 
 def parse_xml_mask(xml_path, level_dims, downsample):
-    """Convert XML annotation to binary mask."""
-    tree = ET.parse(xml_path)
-    root = tree.getroot()
+    """
+    Convert XML annotation to binary mask.
+    Parameters:
+    - xml_path: str, path to the XML file containing annotations.
+    - level_dims: tuple, dimensions of the WSI at the specified level (width, height).
+    - downsample: float, downsample factor for the WSI level.
+    """
+    try:
+        tree = etree.parse(xml_path)
+    except etree.XMLSyntaxError as e:
+        print(f"Error parsing XML file {xml_path}: {e}")
+        return None
 
-    mask = Image.new("L", level_dims, 0)  # 'L' mode for 8-bit pixels, black/white
+    mask = Image.new("L", level_dims, 0)
     draw = ImageDraw.Draw(mask)
 
-    for annotation in root.findall(".//Annotation"):
-        for region in annotation.findall("Region"):
-            vertices = region.find("Vertices")
-            coords = [
-                (
-                    int(float(vertex.get("X")) / downsample),
-                    int(float(vertex.get("Y")) / downsample),
-                )
-                for vertex in vertices.findall("Vertex")
-            ]
-            draw.polygon(coords, outline=1, fill=1)
-
+    for coordinates_node in tree.xpath("//Annotation/Coordinates | //Annotations/Annotation/Coordinates"):
+        coords = []
+        for coord_node in coordinates_node.findall("Coordinate"):
+            try:
+                x = float(coord_node.get("X"))
+                y = float(coord_node.get("Y"))
+                # Scale coordinates to the target level
+                scaled_x = int(x / downsample)
+                scaled_y = int(y / downsample)
+                coords.append((scaled_x, scaled_y))
+            except (ValueError, TypeError) as e:
+                print(f"Warning: Could not parse coordinate (X,Y) from XML for {xml_path}: {e}")
+                continue
+        if coords:
+            # Draw with 255 for white on a black background
+            draw.polygon(coords, outline=255, fill=255)
     return mask
 
 
-def train_resnet_classifier():
+def train_resnet_classifier(level=3):
+    """ 
+    Train a ResNet18 classifier on the extracted patches.
+    """
     print("[INFO] Training ResNet18 classifier on extracted patches...")
-    patch_dir = "./data/camelyon16/patches/level_4"
+    patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
 
     transform = transforms.Compose(
         [
@@ -267,20 +283,11 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True):
         prefix = file.replace(".tif", "")
 
         # Check if patches for this image already exist
-        already_extracted = False
         patch_save_dir = os.path.join(level_dir, prefix)
-        os.makedirs(patch_save_dir, exist_ok=True)
-        patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
-        region.save(os.path.join(patch_save_dir, patch_name))
-        existing_patches = [
-            f for f in os.listdir(patch_save_dir) if f.startswith(prefix)
-        ]
-        if len(existing_patches) > 0:
-            already_extracted = True
-            break
-        if already_extracted:
+        if os.path.exists(patch_save_dir) and len(os.listdir(patch_save_dir)) > 0:
             print(f"[INFO] Patches for {file} already extracted, skipping.")
             continue
+        os.makedirs(patch_save_dir, exist_ok=True)
 
         wsi_path = os.path.join(wsi_dir, file)
         xml_name = file.replace(".tif", ".xml")
@@ -346,6 +353,7 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True):
                     region = padded_region
 
                 label = "normal"
+                # Check if the patch overlaps with any positimve (tumor) region in the generated binary mask
                 if mask:
                     mask_patch = mask.crop((x, y, x + patch_size, y + patch_size))
                     if np.any(np.array(mask_patch) > 0):
@@ -368,11 +376,12 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True):
         )
 
 
-def extract_features(level=3):
+def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
     """
     Extract features from the patches using a ResNet18 model.
     Parameters:
     - level: int, WSI level to extract patches from (0, 1, 2, 3).
+    - model_path: str, path to the pre-trained ResNet18 model.
     """
     transform = transforms.Compose(
         [
@@ -381,7 +390,7 @@ def extract_features(level=3):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
-
+    model_path = os.path.join(os.getcwd(), "models", model_path)
     patch_dir = os.path.join(
         os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
     )
@@ -404,8 +413,27 @@ def extract_features(level=3):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ResNet18FeatureExtractor().to(device)
-    # model.load_state_dict(torch.load("resnet18_patch_classifier.pth"), strict=False) # strict=False because of head removal
-    model.eval() # Set to evaluation mode
+    full_classifier_model = ResNet18Classifier().to(device)
+    if os.path.exists(model_path):
+        print(f"[INFO] Loading trained classifier weights from {model_path}")
+        full_classifier_model.load_state_dict(torch.load(model_path, map_location=device))
+    else:
+        print(f"[WARNING] Trained classifier model not found at {model_path}. "
+              "Extracting features with ImageNet pre-trained weights only. "
+              "Consider running `train_resnet_classifier()` first.")
+
+    model = ResNet18FeatureExtractor().to(device)
+    # Load the state_dict and filter out the 'fc' layer weights
+    pretrained_dict = full_classifier_model.state_dict()
+    model_dict = model.state_dict()
+
+    pretrained_dict = {k: v for k, v in pretrained_dict.items() if k in model_dict and not k.startswith('model.fc')}
+
+    # copy params from pretrained_dict to model_dict
+    model_dict.update(pretrained_dict)
+    model.load_state_dict(model_dict)
+
+    model.eval() 
 
     features = []
     labels = []
@@ -441,7 +469,7 @@ def extract_features(level=3):
     print(f"[INFO] Features saved to {features_save_path}, labels to {labels_save_path}, paths to {paths_save_path}")
 
 
-def create_validation_set():
+def create_validation_set(remote=False):
     """
     Create validation set: exactly 10 files (5 normal + 5 tumor).
     """
@@ -453,7 +481,8 @@ def create_validation_set():
     tumor_files = sorted([f for f in os.listdir(src_dir) if f.startswith("tumor")])[-5:]
 
     for f in normal_files + tumor_files:
-        shutil.move(os.path.join(src_dir, f), os.path.join(dst_dir, f))
+        if remote:
+            shutil.move(os.path.join(src_dir, f), os.path.join(dst_dir, f))
     print(
         f"[INFO] Validation set created with {len(normal_files)} normal and {len(tumor_files)} tumor files."
     )
@@ -540,6 +569,14 @@ def main():
     parser.add_argument("--extract_features", action="store_true", help="Extract features from patches")
     parser.add_argument("--check_structure", action="store_true", help="Check directory structure")
     parser.add_argument("--run_evaluation", action="store_true", help="Run CAMELYON16 evaluation script.")
+
+    # Check for unknown arguments
+    known_args = {action.dest for action in parser._actions}
+    input_args = {arg.lstrip('-').replace('-', '_') for arg in sys.argv[1:] if arg.startswith('-')}
+    unknown_args = input_args - known_args
+    if unknown_args:
+        print(f"[ERROR] Unknown command line arguments: {', '.join(unknown_args)}")
+        sys.exit(1)
     
     args = parser.parse_args()
 
@@ -579,12 +616,12 @@ def main():
         if not features_extracted():
             print("[ERROR] Features must be extracted before training.")
             return
-        train_resnet_classifier()
+        train_resnet_classifier(args.patch_level)
 
     if args.prepare:
         prepare_data()
     if args.validation:
-        create_validation_set()
+        create_validation_set(args.remote)
     if args.test:
         pass
     if args.check_structure:
