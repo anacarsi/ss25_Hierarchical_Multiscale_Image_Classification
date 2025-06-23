@@ -133,7 +133,7 @@ def download_dataset(remote=False):
             print(f"[INFO] Preparing to download {file_name} to {destination_path}")
             print(f"[DEBUG] We are in directory : {os.getcwd()} and target directory is {target_dir} and file is {file_name} and destination path is {destination_path}")
             url = BASE_URL + remote_file_path
-            # download_file(url, destination_path)
+            download_file(url, destination_path)
 
 
 def extract_zip(zip_path, extract_to):
