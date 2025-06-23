@@ -12,11 +12,11 @@ from torch.utils.data import DataLoader
 from PIL import Image, ImageDraw, ImageOps
 from lxml import etree
 from torchvision import transforms
-
+"""
 os.add_dll_directory(
     r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
 )
-
+"""
 import openslide
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from models.resnet import ResNet18Classifier, ResNet18FeatureExtractor
@@ -203,7 +203,7 @@ def train_resnet_classifier(level=3):
     Train a ResNet18 classifier on the extracted patches.
     """
     print("[INFO] Training ResNet18 classifier on extracted patches...")
-    patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
+    patch_dir = os.path.join(os.getcwd(), "..", "data", "camelyon16", "patches", f"level_{level}")
 
     transform = transforms.Compose(
         [
@@ -244,9 +244,8 @@ def train_resnet_classifier(level=3):
             f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss:.4f}, Accuracy: {acc:.4f}"
         )
 
-    torch.save(model.state_dict(), "resnet18_patch_classifier.pth")
+    torch.save(model.state_dict(), "models/resnet18_patch_classifier.pth")
     print("[INFO] ResNet18 classifier training complete and saved.")
-
 
 def extract_patches(patch_size=224, level=3, stride=None, pad=True):
     """
@@ -392,7 +391,7 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
     )
     model_path = os.path.join(os.getcwd(), "models", model_path)
     patch_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
+        os.getcwd(), "..", "data", "camelyon16", "patches", f"level_{level}"
     )
     
     if not os.path.exists(patch_dir) or not os.listdir(patch_dir):
@@ -441,7 +440,7 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
 
     with torch.no_grad():
         for batch_idx, (imgs, lbls, img_paths) in enumerate(tqdm(loader, desc="Extracting Features")):
-            # print("Batch size:", imgs.shape) # This can be too verbose in a loop
+            # print("Batch size:", imgs.shape)
             feats = model(imgs.to(device))
             features.append(feats.cpu())
             labels.extend(lbls.tolist()) # Convert tensor to list for extend

@@ -7,18 +7,25 @@ from torchvision import models, transforms
 from PIL import Image
 import os
 
-
 class ResNet18FeatureExtractor(nn.Module):
-    def __init__(self):
+    def __init__(self, weight_path=None):
         super().__init__()
-        resnet = models.resnet18(pretrained=True)
-        self.features = nn.Sequential(
-            *list(resnet.children())[:-1]
-        )  # Output shape: (B, 512, 1, 1)
+        resnet = models.resnet18(weights=None)  # Start with uninitialized weights
+
+        if weight_path and os.path.exists(weight_path):
+            state_dict = torch.load(weight_path, map_location="cpu")
+            # Remove the classifier layer weights
+            state_dict = {k: v for k, v in state_dict.items() if "fc" not in k}
+            resnet.load_state_dict(state_dict, strict=False)
+            print(f"[INFO] Loaded fine-tuned weights from {weight_path}")
+        else:
+            print("[WARNING] Using ImageNet weights (not fine-tuned)")
+
+        self.features = nn.Sequential(*list(resnet.children())[:-1])
 
     def forward(self, x):
         x = self.features(x)
-        return x.view(x.size(0), -1)  # -> shape: (batch_size, 512)
+        return x.view(x.size(0), -1)
 
 
 class ResNet18Classifier(nn.Module):
