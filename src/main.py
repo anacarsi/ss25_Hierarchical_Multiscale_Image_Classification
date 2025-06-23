@@ -12,11 +12,11 @@ from torch.utils.data import DataLoader
 from PIL import Image, ImageDraw, ImageOps
 from lxml import etree
 from torchvision import transforms
-
+""""
 os.add_dll_directory(
     r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
 )
-
+"""
 import openslide
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from models.resnet import ResNet18Classifier, ResNet18FeatureExtractor
@@ -212,7 +212,7 @@ def train_resnet_classifier(level=3):
     Train a ResNet18 classifier on the extracted patches.
     """
     print("[INFO] Training ResNet18 classifier on extracted patches...")
-    patch_dir = os.path.join(os.getcwd(), "..", "data", "camelyon16", "patches", f"level_{level}")
+    patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
 
     transform = transforms.Compose(
         [
@@ -231,7 +231,7 @@ def train_resnet_classifier(level=3):
     criterion = nn.CrossEntropyLoss()
 
     # Training loop
-    num_epochs = 5
+    num_epochs = 20
     for epoch in range(num_epochs):
         model.train()
         total_loss, correct = 0, 0
@@ -253,7 +253,7 @@ def train_resnet_classifier(level=3):
             f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss:.4f}, Accuracy: {acc:.4f}"
         )
 
-    torch.save(model.state_dict(), "models/resnet18_patch_classifier.pth")
+    torch.save(model.state_dict(), "src/models/resnet18_patch_classifier.pth")
     print("[INFO] ResNet18 classifier training complete and saved.")
 
 def extract_patches(patch_size=224, level=3, stride=None, pad=True):
@@ -376,8 +376,6 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True):
                 patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
                 region.save(os.path.join(patch_save_dir, patch_name))
                 patch_count += 1
-                if patch_count % 100 == 0:
-                    print(f"Extracted patches {patch_count} for {file}")
 
         print(
             f"[INFO] Patch extraction complete for {file} at level {level}. Total patches: {patch_count}"
@@ -400,7 +398,7 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
     )
     model_path = os.path.join(os.getcwd(), "models", model_path)
     patch_dir = os.path.join(
-        os.getcwd(), "..", "data", "camelyon16", "patches", f"level_{level}"
+        os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
     )
     
     if not os.path.exists(patch_dir) or not os.listdir(patch_dir):
@@ -629,11 +627,8 @@ def main():
         if not images_downloaded():
             print("[ERROR] Images must be downloaded before training.")
             return
-        if not patches_extracted(patch_level=args.train_patch_level):
+        if not patches_extracted(patch_level=args.patch_level):
             print("[ERROR] Patches must be extracted before training.")
-            return
-        if not features_extracted():
-            print("[ERROR] Features must be extracted before training.")
             return
         train_resnet_classifier(args.patch_level)
 
