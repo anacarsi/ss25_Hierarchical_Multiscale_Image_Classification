@@ -12,11 +12,11 @@ from torch.utils.data import DataLoader
 from PIL import Image, ImageDraw, ImageOps
 from lxml import etree
 from torchvision import transforms
-"""
+
 os.add_dll_directory(
     r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
 )
-"""
+
 import openslide
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from models.resnet import ResNet18Classifier, ResNet18FeatureExtractor
@@ -89,6 +89,7 @@ def download_dataset(remote=False):
     
     # Define the target directories
     train_img_dir = os.path.join(camelyon_dir, "train", "img")
+    val_img_dir = os.path.join(camelyon_dir, "val", "img")
     test_img_dir = os.path.join(camelyon_dir, "test", "img")
     train_mask_dir = os.path.join(camelyon_dir, "train", "mask")
     test_mask_dir = os.path.join(camelyon_dir, "test", "mask")
@@ -124,14 +125,20 @@ def download_dataset(remote=False):
                 print(f"[INFO] Skipping download of {file_name} in remote mode.")
                 continue
 
+            # Check if the file exists in train/img, val/img, or test/img
+            train_img_path = os.path.join(train_img_dir, file_name)
+            val_img_path = os.path.join(val_img_dir, file_name)
+            test_img_path = os.path.join(test_img_dir, file_name)
             destination_path = os.path.join(target_dir, file_name)
 
-            if os.path.exists(destination_path):
-                print(f"[INFO] Skipping: {destination_path} already exists.")
+            if any(os.path.exists(p) for p in [train_img_path, val_img_path, test_img_path]):
+                print(f"[INFO] Skipping: {file_name} already exists in train/img, val/img, or test/img.")
+                continue
+            # check if lesion_annotations.zip already exist in the mask directories train_mask_dir or test_mask_dir
+            if file_type in ["train_masks", "test_masks"] and os.path.exists(destination_path):
+                print(f"[INFO] Skipping: {file_name} already exists in {target_dir}.")
                 continue
 
-            print(f"[INFO] Preparing to download {file_name} to {destination_path}")
-            print(f"[DEBUG] We are in directory : {os.getcwd()} and target directory is {target_dir} and file is {file_name} and destination path is {destination_path}")
             url = BASE_URL + remote_file_path
             download_file(url, destination_path)
 
@@ -484,6 +491,17 @@ def create_validation_set(remote=False):
     for f in normal_files + tumor_files:
         if remote:
             shutil.move(os.path.join(src_dir, f), os.path.join(dst_dir, f))
+
+    # Move as well masks to validation set
+    mask_src_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "mask", "annotations")
+    mask_dst_dir = os.path.join(os.getcwd(), "data", "camelyon16", "val", "mask", "annotations")
+    os.makedirs(mask_dst_dir, exist_ok=True)
+    for f in os.listdir(mask_src_dir):
+        # Take the masks of the tumor_files on validation set
+        wsi_name = f.split('.')[0]  # e.g. tumor_001.xml -> tumor_001
+        if wsi_name in [f.split('.')[0] for f in tumor_files]:
+            shutil.move(os.path.join(mask_src_dir, f), os.path.join(mask_dst_dir, f))
+
     print(
         f"[INFO] Validation set created with {len(normal_files)} normal and {len(tumor_files)} tumor files."
     )
