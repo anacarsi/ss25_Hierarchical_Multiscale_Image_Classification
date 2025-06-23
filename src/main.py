@@ -251,10 +251,10 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True):
 
     wsi_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img")
     annot_dir_train = os.path.join(
-        os.getcwd(), "data", "camelyon16", "train", "mask"
+        os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
     )
     annot_dir_test = os.path.join(
-        os.getcwd(), "data", "camelyon16", "test", "mask"
+        os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
     )
     level_dir = os.path.join(
         os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
@@ -404,7 +404,6 @@ def extract_features(level=3):
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ResNet18FeatureExtractor().to(device)
-    # If you trained a model, you might want to load its weights here
     # model.load_state_dict(torch.load("resnet18_patch_classifier.pth"), strict=False) # strict=False because of head removal
     model.eval() # Set to evaluation mode
 
@@ -450,10 +449,8 @@ def create_validation_set():
     dst_dir = os.path.join(os.getcwd(), "data", "camelyon16", "val", "img")
     os.makedirs(dst_dir, exist_ok=True)
 
-    normal_files = sorted([f for f in os.listdir(src_dir) if f.startswith("normal")])[
-        :5
-    ]
-    tumor_files = sorted([f for f in os.listdir(src_dir) if f.startswith("tumor")])[:5]
+    normal_files = sorted([f for f in os.listdir(src_dir) if f.startswith("normal")])[-5:]
+    tumor_files = sorted([f for f in os.listdir(src_dir) if f.startswith("tumor")])[-5:]
 
     for f in normal_files + tumor_files:
         shutil.move(os.path.join(src_dir, f), os.path.join(dst_dir, f))
@@ -489,21 +486,15 @@ def check_structure():
     return True
 
 
-def prepare_data():  # TODO: WIP
-    """
-    Prepare data for training (e.g., preprocessing or augmentation).
-    """
+def prepare_data():
     print("[INFO] Preparing data...")
-
-    # Create a validation set from the training data
-    create_validation_set()
 
     # Extract training masks
     train_zip = os.path.join(
         os.getcwd(), "data", "camelyon16", "train", "mask", "lesion_annotations.zip"
     )
     train_extract_to = os.path.join(
-        os.getcwd(), "data", "camelyon16", "train", "mask"
+        os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
     )
     if not os.path.exists(train_zip):
         print("[ERROR] Training masks zip file not found. Please download the dataset first.")
@@ -515,21 +506,13 @@ def prepare_data():  # TODO: WIP
         os.getcwd(), "data", "camelyon16", "test", "mask", "lesion_annotations.zip"
     )
     test_extract_to = os.path.join(
-        os.getcwd(), "data", "camelyon16", "test", "mask"
+        os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
     )
     if not os.path.exists(test_zip):
         print("[ERROR] Testing masks zip file not found. Please download the dataset first.")
     else:
         extract_zip(test_zip, test_extract_to)
 
-    """
-    if os.path.exists(train_zip):
-        os.remove(train_zip)
-        print(f"[INFO] Removed {train_zip}")
-    if os.path.exists(test_zip):
-        os.remove(test_zip)
-        print(f"[INFO] Removed {test_zip}")
-    """
     print("[INFO] Data preparation completed.")
 
 
