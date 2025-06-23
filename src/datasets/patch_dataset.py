@@ -1,37 +1,42 @@
+import os
 from torch.utils.data import Dataset
 from PIL import Image
-import os
 
 class PatchDataset(Dataset):
     def __init__(self, root_dir, transform=None):
         self.root_dir = root_dir
         self.transform = transform
-        self.patches = []
+        self.image_paths = []
         self.labels = [] # 0 for normal, 1 for tumor
-        self.paths = []
 
-        # Load patch paths and labels
-        for prefix_dir in os.listdir(root_dir):
-            full_prefix_dir = os.path.join(root_dir, prefix_dir)
-            if os.path.isdir(full_prefix_dir):
-                for patch_name in os.listdir(full_prefix_dir):
-                    if patch_name.endswith(".png"):
-                        label = 1 if "_tumor.png" in patch_name else 0 # Assuming naming convention
-                        self.patches.append(os.path.join(full_prefix_dir, patch_name))
-                        self.labels.append(label)
-                        self.paths.append(os.path.join(prefix_dir, patch_name)) # Store relative path for features
+        # Iterate through slide subdirectories
+        for slide_name in os.listdir(root_dir):
+            slide_path = os.path.join(root_dir, slide_name)
+            if os.path.isdir(slide_path):
+                for patch_file in os.listdir(slide_path):
+                    if patch_file.endswith(".png"):
+                        self.image_paths.append(os.path.join(slide_path, patch_file))
+                        # Extract label from filename
+                        if "_tumor" in patch_file:
+                            self.labels.append(1) # Tumor
+                        elif "_normal" in patch_file:
+                            self.labels.append(0) # Normal
+                        else:
+                            # Handle cases where labels might be missing in filename (though your current code adds them)
+                            # For robustness, you might want a default or error handling here
+                            print(f"Warning: Patch {patch_file} has no explicit label in filename. Assuming normal.")
+                            self.labels.append(0)
 
-        print(f"Loaded {len(self.patches)} patches from {root_dir}")
 
     def __len__(self):
-        return len(self.patches)
+        return len(self.image_paths)
 
     def __getitem__(self, idx):
-        img_path = self.patches[idx]
-        image = Image.open(img_path).convert("RGB")
+        img_path = self.image_paths[idx]
         label = self.labels[idx]
-        path = self.paths[idx]
+        image = Image.open(img_path).convert("RGB")
 
         if self.transform:
             image = self.transform(image)
-        return image, label, path
+
+        return image, label, img_path # Return path for debugging/tracking
