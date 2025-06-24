@@ -1,8 +1,9 @@
 # ss25_Hierarchical_Multiscale_Image_Classification
-HiPAC — Hierarchical Patch-based Adaptive Classifier
+HiPAC — Hierarchical Patch-based Adaptive Classifier.
+Repository to detect cancer metastasis on lymph node. 
 <p align="center">
-  <img src="./images/tumor_002_mask_overlay.png" alt="Tumor 002 Overlay" width="300" height="300"/>
-  <img src="./images/tumor_076_mask_overlay.png" alt="Tumor 076 Overlay" width="300" height="300"/>
+  <img src="./images/tumor_002_mask_overlay.png" alt="Tumor 002 Overlay" width="400" height="400"/>
+  <img src="./images/tumor_076_mask_overlay.png" alt="Tumor 076 Overlay" width="400" height="400"/>
 </p>
 ## Installation
 
