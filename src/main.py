@@ -115,6 +115,7 @@ def download_dataset(remote=False):
         
         # In non-remote mode, only download one image file per category
         if not remote and file_type in ["train_normal", "train_tumor", "test_images"]:
+
             files_to_download = files_to_download[:1]
         
         for remote_file_path in files_to_download:
@@ -142,6 +143,36 @@ def download_dataset(remote=False):
             url = BASE_URL + remote_file_path
             download_file(url, destination_path)
 
+def move_files():
+    base_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", "level_3")
+
+    # Iterate through each subfolder in level_3
+    for folder_name in os.listdir(base_dir):
+        folder_path = os.path.join(base_dir, folder_name)
+        
+        # Only process directories
+        if not os.path.isdir(folder_path):
+            continue
+
+        tumor_subdir = os.path.join(folder_path, "tumor")
+        
+        if os.path.isdir(tumor_subdir):
+            print(f"[INFO] Processing {tumor_subdir}...")
+            # Move all .png files to the parent directory
+            for file_name in os.listdir(tumor_subdir):
+                if file_name.endswith(".png"):
+                    src_file = os.path.join(tumor_subdir, file_name)
+                    dst_file = os.path.join(folder_path, file_name)
+                    shutil.move(src_file, dst_file)
+            
+            # Remove the now-empty 'tumor' subfolder
+            try:
+                os.rmdir(tumor_subdir)
+                print(f"[INFO] Deleted empty directory: {tumor_subdir}")
+            except OSError as e:
+                print(f"[WARNING] Could not delete {tumor_subdir}: {e}")
+        else:
+            print(f"[INFO] No 'tumor' subdirectory in {folder_path}, skipping.")
 
 def extract_zip(zip_path, extract_to):
     """
@@ -194,20 +225,137 @@ def download_all_tumor_extract_patches(download = False):
     # Extract only tumor patches from downloaded tumor images
     extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=True) 
     
+def extract_patches_per_slide(slide_path="tumor_109", patch_size=224, level=3, stride=None, pad=True, only_tumor=False):
+    """
+    Extract patches from a single slide directory.
+    Parameters:
+    - slide_dir: str, path to the slide directory containing patches.
+    - patch_size: int, size of the patches to extract.
+    - level: int, level of the WSI to extract patches from.
+    - stride: int, stride for patch extraction.
+    - pad: bool, if True, pad the image to cover all regions.
+    - only_tumor: bool, if True, only extract tumor patches from tumor images.
+    """
+    stride = stride or patch_size
+    patch_sizes = {0: 1792, 1: 896, 2: 448, 3: 224}
+    patch_size = patch_sizes.get(level, 224)
+    slide_path = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img", slide_path + ".tif")
 
-def parse_xml_mask(xml_path, level_dims, downsample):
+    prefix = os.path.splitext(os.path.basename(slide_path))[0]
+    wsi_dir = os.path.dirname(slide_path)
+    # Guess annotation directory based on slide location
+    if "test" in wsi_dir:
+        annot_dir = os.path.join(os.path.dirname(os.path.dirname(wsi_dir)), "mask", "annotations")
+    else:
+        annot_dir = os.path.join(os.path.dirname(os.path.dirname(wsi_dir)), "mask", "annotations")
+    xml_name = prefix + ".xml"
+    xml_path = os.path.join(annot_dir, xml_name)
+
+    level_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
+    os.makedirs(level_dir, exist_ok=True)
+    patch_save_dir = os.path.join(level_dir, prefix)
+    if os.path.exists(patch_save_dir) and len(os.listdir(patch_save_dir)) > 0:
+        print(f"[INFO] Patches for {slide_path} already extracted, skipping.")
+        return
+    os.makedirs(patch_save_dir, exist_ok=True)
+
+    print(f"[DEBUG] Processing file: {slide_path} with XML: {xml_path}")
+    try:
+        slide = openslide.OpenSlide(slide_path)
+    except Exception as e:
+        print(f"[ERROR] Could not open {slide_path}: {e}")
+        return
+    width, height = slide.level_dimensions[level]
+    downsample = slide.level_downsamples[level]
+
+    # Calculate padded size if needed
+    if pad:
+        pad_w = (patch_size - width % patch_size) % patch_size
+        pad_h = (patch_size - height % patch_size) % patch_size
+        padded_width = width + pad_w
+        padded_height = height + pad_h
+    else:
+        padded_width = width
+        padded_height = height
+
+    # Load and render XML mask
+    mask = None
+    if os.path.exists(xml_path):
+        try:
+            mask = parse_xml_mask(xml_path, (width, height), slide, level)
+            if pad and (pad_w > 0 or pad_h > 0):
+                mask = ImageOps.expand(mask, (0, 0, pad_w, pad_h), fill=0)
+        except Exception as e:
+            print(f"[WARNING] Failed to parse XML for {slide_path}: {e}")
+    else:
+        print(f"[INFO] No annotation found for {slide_path}, treating as normal.")
+
+    print(f"[INFO] Processing {slide_path} at level {level} (size: {width}x{height}, padded: {padded_width}x{padded_height})")
+
+    patch_count = 0
+    for x in range(0, padded_width, stride):
+        for y in range(0, padded_height, stride):
+            if x >= width or y >= height:
+                continue
+
+            patch_w = min(patch_size, width - x)
+            patch_h = min(patch_size, height - y)
+            if patch_w <= 0 or patch_h <= 0:
+                continue
+
+            region = slide.read_region(
+                (int(x * downsample), int(y * downsample)),
+                level,
+                (patch_w, patch_h),
+            ).convert("RGB")
+
+            if patch_w < patch_size or patch_h < patch_size:
+                padded_region = Image.new("RGB", (patch_size, patch_size), (255, 255, 255))
+                padded_region.paste(region, (0, 0))
+                region = padded_region
+
+            label = "unlabeled"
+            if mask:
+                mask_patch = mask.crop((x, y, x + patch_size, y + patch_size))
+                if np.any(np.array(mask_patch) > 0):
+                    label = "tumor"
+                else:
+                    label = "normal"
+
+            patch_array = np.array(region)
+            if np.mean(patch_array) > 240:  # too white (empty tissue)
+                continue
+
+            if (only_tumor and label == "tumor") or not only_tumor:
+                patch_save_dir_labeled = os.path.join(level_dir, prefix, label)
+                os.makedirs(patch_save_dir_labeled, exist_ok=True)
+                patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
+                region.save(os.path.join(patch_save_dir_labeled, patch_name))
+                patch_count += 1
+
+    print(
+        f"[INFO] Patch extraction complete for {slide_path} at level {level}. Total patches: {patch_count}"
+    )
+
+def parse_xml_mask(xml_path, level_dims, slide, level):
     """
     Convert XML annotation to binary mask.
     Parameters:
     - xml_path: str, path to the XML file containing annotations.
     - level_dims: tuple, dimensions of the WSI at the specified level (width, height).
-    - downsample: float, downsample factor for the WSI level.
+    - slide: OpenSlide object for the WSI.
+    - level: int, target level for mask.
     """
     try:
         tree = etree.parse(xml_path)
     except etree.XMLSyntaxError as e:
         print(f"Error parsing XML file {xml_path}: {e}")
         return None
+
+    # Compute scaling factors based on actual dimensions
+    base_dims = slide.level_dimensions[0]
+    scale_x = level_dims[0] / base_dims[0]
+    scale_y = level_dims[1] / base_dims[1]
 
     mask = Image.new("L", level_dims, 0)
     draw = ImageDraw.Draw(mask)
@@ -219,14 +367,13 @@ def parse_xml_mask(xml_path, level_dims, downsample):
                 x = float(coord_node.get("X"))
                 y = float(coord_node.get("Y"))
                 # Scale coordinates to the target level
-                scaled_x = int(x / downsample)
-                scaled_y = int(y / downsample)
+                scaled_x = int(x * scale_x)
+                scaled_y = int(y * scale_y)
                 coords.append((scaled_x, scaled_y))
             except (ValueError, TypeError) as e:
                 print(f"Warning: Could not parse coordinate (X,Y) from XML for {xml_path}: {e}")
                 continue
         if coords:
-            # Draw with 255 for white on a black background
             draw.polygon(coords, outline=255, fill=255)
     return mask
 
@@ -385,27 +532,60 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
                     padded_region.paste(region, (0, 0))
                     region = padded_region
 
-                label = "normal"
+                label = "unlabeled"
                 # Check if the patch overlaps with any positimve (tumor) region in the generated binary mask
                 if mask:
                     mask_patch = mask.crop((x, y, x + patch_size, y + patch_size))
                     if np.any(np.array(mask_patch) > 0):
                         label = "tumor"
+                    else:
+                        label = "normal"
 
                 patch_array = np.array(region)
                 if np.mean(patch_array) > 240:  # too white (empty tissue)
                     continue
 
                 if (only_tumor and label == "tumor") or not only_tumor:
-                    patch_save_dir = os.path.join(level_dir, prefix, label)
-                    os.makedirs(patch_save_dir, exist_ok=True)
+                    patch_save_dir_labeled = os.path.join(level_dir, prefix, label)
+                    os.makedirs(patch_save_dir_labeled, exist_ok=True)
                     patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
-                    region.save(os.path.join(patch_save_dir, patch_name))
+                    region.save(os.path.join(patch_save_dir_labeled, patch_name))
                     patch_count += 1
+
 
         print(
             f"[INFO] Patch extraction complete for {file} at level {level}. Total patches: {patch_count}"
         )
+
+def count_number_tumor_patches(level=3):
+    """ 
+    Count how many patches ending with _tumor.png and _normal.png are in the patch directory for a given level across all slides.
+    """
+    patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
+    if not os.path.exists(patch_dir):
+        print(f"[ERROR] Patch directory '{patch_dir}' does not exist. Please run patch extraction first.")
+        return
+
+    total_tumor = 0
+    total_normal = 0
+    slides_with_no_tumor = []
+
+    for slide_name in os.listdir(patch_dir):
+        slide_path = os.path.join(patch_dir, slide_name)
+        if os.path.isdir(slide_path):
+            # Count tumor and normal patches in this slide
+            number_tumor_slide = sum(1 for f in os.listdir(slide_path) if f.endswith("_tumor.png"))
+            total_tumor += number_tumor_slide
+            if number_tumor_slide == 0:
+                slides_with_no_tumor.append(slide_name)
+            total_normal += sum(1 for f in os.listdir(slide_path) if f.endswith("_normal.png"))
+        if (total_tumor != 0 or slide_path.endswith("_tumor.png")) and slide_name.startswith("normal_"):
+            print(f"[WARNING] {slide_name} finds a tumor, and it is normal")
+
+    print(f"[INFO] Total tumor patches at level {level}: {total_tumor}")
+    print(f"[INFO] Total non-tumor patches at level {level}: {total_normal}")
+    print(f"[INFO] Total slides with no tumor patches at level {level}: {len(slides_with_no_tumor)}")
+    print(f"[INFO] Slides with no tumor patches: {', '.join(slides_with_no_tumor)}" if slides_with_no_tumor else "All slides have tumor patches.")
 
 
 def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
@@ -613,6 +793,10 @@ def main():
     parser.add_argument("--check_structure", action="store_true", help="Check directory structure")
     parser.add_argument("--run_evaluation", action="store_true", help="Run CAMELYON16 evaluation script.")
     parser.add_argument("--balance_dataset", action="store_true", help="Balance dataset by downloading all tumor images and extracting patches from them.")
+    parser.add_argument("--count_tumor_patches", action="store_true", help="Count number of tumor patches at a given level.")
+    parser.add_argument("--patch_one_slide", type=str, default=None, help="Extract patches from a single slide directory (e.g. tumor_109)")
+    parser.add_argument("--slide", type=str, default=None, help="Extract patches from a single slide directory (e.g. tumor_109) at a given level")
+    parser.add_argument("--move_files", action="store_true", help="Move patches to a new directory structure based on slide names")
 
     # Check for unknown arguments
     known_args = {action.dest for action in parser._actions}
@@ -627,6 +811,9 @@ def main():
     # Download images
     if args.download:
         download_dataset(args.remote)
+
+    if args.move_files:
+        move_files()
 
     # Extract patches
     if args.patch:
@@ -669,6 +856,10 @@ def main():
         check_structure()
     if args.balance_dataset:
         download_all_tumor_extract_patches()
+    if args.count_tumor_patches:
+        count_number_tumor_patches(level=3)
+    if args.patch_one_slide:
+        extract_patches_per_slide(slide_path=args.patch_one_slide, level=int(args.patch_level))
 
     if args.run_evaluation:
         """
