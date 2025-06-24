@@ -171,6 +171,30 @@ def extract_zip(zip_path, extract_to):
     print(f"[INFO] Extracted {zip_path} to {extract_to}")
 
 
+def download_all_tumor_extract_patches(download = False):
+    """
+    Download all tumor images and extract tumor patches from them to have a balanced dataset.
+    """
+    camelyon_dir = os.path.join(os.getcwd(), "data", "camelyon16")
+    train_img_dir = os.path.join(camelyon_dir, "train", "img")
+    train_mask_dir = os.path.join(camelyon_dir, "train", "mask", "annotations")
+
+    # Download all tumor images
+    if download:
+        print("[INFO] Downloading all tumor images...")
+        for i in range(36, 112): # from validation images to end
+            file_name = f"tumor_{i:03d}.tif"
+            if os.path.exists(os.path.join(train_img_dir, file_name)):
+                print(f"[INFO] Tumor image {file_name} already exists in {train_img_dir}. Skipping download.")
+                continue
+            url = BASE_URL + f"CAMELYON16/training/tumor/{file_name}"
+            destination_path = os.path.join(train_img_dir, file_name)
+            download_file(url, destination_path)
+
+    # Extract only tumor patches from downloaded tumor images
+    extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=True) 
+    
+
 def parse_xml_mask(xml_path, level_dims, downsample):
     """
     Convert XML annotation to binary mask.
@@ -256,7 +280,7 @@ def train_resnet_classifier(level=3):
     torch.save(model.state_dict(), "src/models/resnet18_patch_classifier.pth")
     print("[INFO] ResNet18 classifier training complete and saved.")
 
-def extract_patches(patch_size=224, level=3, stride=None, pad=True):
+def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=False):
     """
     Extract patches from WSIs at a specified level, apply mask overlays, and save tumor vs normal labels.
     Only extracts patches if they have not already been extracted for a given image.
@@ -265,6 +289,7 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True):
     - level: int, level of the WSI to extract patches from.
     - stride: int, stride for patch extraction.
     - pad: bool, if True, pad the image to cover all regions.
+    - only_tumor: bool, if True, only extract tumor patches from tumor images.
     """
     print(f"[INFO] Extracting patches at level {level}...")
     stride = stride or patch_size
@@ -371,11 +396,12 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True):
                 if np.mean(patch_array) > 240:  # too white (empty tissue)
                     continue
 
-                patch_save_dir = os.path.join(level_dir, prefix)
-                os.makedirs(patch_save_dir, exist_ok=True)
-                patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
-                region.save(os.path.join(patch_save_dir, patch_name))
-                patch_count += 1
+                if (only_tumor and label == "tumor") or not only_tumor:
+                    patch_save_dir = os.path.join(level_dir, prefix, label)
+                    os.makedirs(patch_save_dir, exist_ok=True)
+                    patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
+                    region.save(os.path.join(patch_save_dir, patch_name))
+                    patch_count += 1
 
         print(
             f"[INFO] Patch extraction complete for {file} at level {level}. Total patches: {patch_count}"
@@ -586,6 +612,7 @@ def main():
     parser.add_argument("--extract_features", action="store_true", help="Extract features from patches")
     parser.add_argument("--check_structure", action="store_true", help="Check directory structure")
     parser.add_argument("--run_evaluation", action="store_true", help="Run CAMELYON16 evaluation script.")
+    parser.add_argument("--balance_dataset", action="store_true", help="Balance dataset by downloading all tumor images and extracting patches from them.")
 
     # Check for unknown arguments
     known_args = {action.dest for action in parser._actions}
@@ -640,6 +667,8 @@ def main():
         pass
     if args.check_structure:
         check_structure()
+    if args.balance_dataset:
+        download_all_tumor_extract_patches()
 
     if args.run_evaluation:
         """
