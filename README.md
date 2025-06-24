@@ -1,6 +1,9 @@
 # ss25_Hierarchical_Multiscale_Image_Classification
 HiPAC — Hierarchical Patch-based Adaptive Classifier
-
+<p align="center">
+  <img src="./images/tumor_002_mask_overlay.png" alt="Tumor 002 Overlay" width="300" height="300"/>
+  <img src="./images/tumor_076_mask_overlay.png" alt="Tumor 076 Overlay" width="300" height="300"/>
+</p>
 ## Installation
 
 1. Clone the repository:
