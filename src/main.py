@@ -872,7 +872,7 @@ def validate_resnet_classifier(model_path="resnet18_patch_classifier.pth"):
     # --------------------------------------
     # 2. t-SNE - print mean coordinates to see separation
     # --------------------------------------
-    tsne = TSNE(n_components=2, perplexity=30, n_iter=1000, random_state=42)
+    tsne = TSNE(n_components=2, perplexity=30, max_iter=1000, random_state=42)
     features_tsne = tsne.fit_transform(features)
     for cls in [0, 1]:
         mean_coords = features_tsne[labels == cls].mean(axis=0)
