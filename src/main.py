@@ -12,6 +12,8 @@ from torch.utils.data import DataLoader
 from PIL import Image, ImageDraw, ImageOps
 from lxml import etree
 from torchvision import transforms
+from sklearn.model_selection import train_test_split
+
 """"
 os.add_dll_directory(
     r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
@@ -378,22 +380,30 @@ def parse_xml_mask(xml_path, level_dims, slide, level):
     return mask
 
 
+def get_dataloaders(patch_dir, transform, test_ratio=0.2, batch_size=32):
+    slide_dirs = [d for d in os.listdir(patch_dir) if os.path.isdir(os.path.join(patch_dir, d))]
+    train_slides, val_slides = train_test_split(slide_dirs, test_size=test_ratio, random_state=42)
+
+    train_dataset = PatchDataset(patch_dir, slide_names=train_slides, transform=transform)
+    val_dataset = PatchDataset(patch_dir, slide_names=val_slides, transform=transform)
+
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+    return train_loader, val_loader, train_dataset, val_dataset
 def train_resnet_classifier(level=3):
-    """ 
-    Train a ResNet18 classifier on the extracted patches.
-    """
-    print("[INFO] Training ResNet18 classifier on extracted patches...")
+    print("[INFO] Training ResNet18 classifier with proper validation split...")
     patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
 
-    transform = transforms.Compose(
-        [
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(
+        patch_dir, transform, test_ratio=0.2, batch_size=32
     )
-    dataset = PatchDataset(patch_dir, transform=transform)
-    loader = DataLoader(dataset, batch_size=32, shuffle=True)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ResNet18Classifier().to(device)
@@ -401,33 +411,40 @@ def train_resnet_classifier(level=3):
     optimizer = Adam(model.parameters(), lr=1e-4)
     criterion = nn.CrossEntropyLoss()
 
-    # Training loop
     num_epochs = 20
     for epoch in range(num_epochs):
         model.train()
         total_loss, correct = 0, 0
-        for imgs, labels, _ in loader:
+        for imgs, labels, _ in train_loader:
             imgs, labels = imgs.to(device), labels.to(device)
-
             optimizer.zero_grad()
             outputs = model(imgs)
             loss = criterion(outputs, labels)
             loss.backward()
             optimizer.step()
-
             total_loss += loss.item()
             preds = outputs.argmax(dim=1)
             correct += (preds == labels).sum().item()
+        train_acc = correct / len(train_dataset)
 
-        acc = correct / len(dataset)
-        print(
-            f"Epoch {epoch+1}/{num_epochs}, Loss: {total_loss:.4f}, Accuracy: {acc:.4f}"
-        )
+        # Validation loop
+        model.eval()
+        val_correct = 0
+        with torch.no_grad():
+            for imgs, labels, _ in val_loader:
+                imgs, labels = imgs.to(device), labels.to(device)
+                outputs = model(imgs)
+                preds = outputs.argmax(dim=1)
+                val_correct += (preds == labels).sum().item()
+        val_acc = val_correct / len(val_dataset)
+
+        print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
 
     torch.save(model.state_dict(), "src/models/resnet18_patch_classifier.pth")
-    print("[INFO] ResNet18 classifier training complete and saved.")
+    print("[INFO] Training complete. Model saved.")
 
-def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=False):
+
+def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=False, test=False):
     """
     Extract patches from WSIs at a specified level, apply mask overlays, and save tumor vs normal labels.
     Only extracts patches if they have not already been extracted for a given image.
@@ -778,6 +795,34 @@ def patches_extracted(patch_level):
 
 def features_extracted(patch_level):
     return os.path.exists(f"patch_features_{patch_level}.npy") and os.path.exists(f"patch_labels_{patch_level}.npy")
+
+def test_resnet_classifier():
+    """
+    Test the ResNet18 classifier on the extracted patches.
+    """
+    patch_level = 3  # Change as needed
+    features_path = f"patch_features_{patch_level}.npy"
+    labels_path = f"patch_labels_{patch_level}.npy"
+
+    if not os.path.exists(features_path) or not os.path.exists(labels_path):
+        print(f"[ERROR] Features or labels not found for level {patch_level}. Please run feature extraction first.")
+        return
+
+    features = np.load(features_path)
+    labels = np.load(labels_path)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = ResNet18Classifier().to(device)
+    model.load_state_dict(torch.load("src/models/resnet18_patch_classifier.pth", map_location=device))
+    model.eval()
+
+    with torch.no_grad():
+        inputs = torch.tensor(features, dtype=torch.float32).to(device)
+        outputs = model(inputs)
+        _, preds = torch.max(outputs, 1)
+
+    accuracy = (preds.cpu().numpy() == labels).mean()
+    print(f"[INFO] ResNet18 classifier accuracy on level {patch_level} patches: {accuracy:.4f}")
 
 def main():
     parser = argparse.ArgumentParser(description="Camelyon Dataset Processing")
