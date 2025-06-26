@@ -13,6 +13,12 @@ from PIL import Image, ImageDraw, ImageOps
 from lxml import etree
 from torchvision import transforms
 from sklearn.model_selection import train_test_split
+from sklearn.manifold import TSNE
+from sklearn.decomposition import PCA
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.model_selection import train_test_split
+import seaborn as sns
 
 """"
 os.add_dll_directory(
@@ -27,6 +33,18 @@ from utils.evaluation_FROC import computeEvaluationMask, computeITCList, readCSV
 from utils.structure import group_patches_by_slide
 import zipfile
 from PIL import Image
+
+class bcolors:
+    HEADER = '\033[95m'
+    OKBLUE = '\033[94m'
+    DEBUG = '\033[96m'
+    INFO = '\033[92m'
+    WARNING = '\033[93m'
+    ERROR = '\033[91m'
+    ENDC = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
 
 # Base URL for the CAMELYON16 dataset
 BASE_URL = "https://s3.ap-northeast-1.wasabisys.com/gigadb-datasets/live/pub/10.5524/100001_101000/100439/"
@@ -55,7 +73,7 @@ def download_file(url, destination_path):
     Downloads a file from a URL to a destination path with a progress bar.
     """
     try:
-        print(f"[INFO] Downloading: {url} into {destination_path}")
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Downloading: {url} into {destination_path}")
         os.makedirs(os.path.dirname(destination_path), exist_ok=True) # Ensure destination dir exists
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
@@ -70,13 +88,13 @@ def download_file(url, destination_path):
                 for chunk in r.iter_content(chunk_size=8192):
                     size = f.write(chunk)
                     bar.update(size)
-        print(f"[INFO] Successfully downloaded {os.path.basename(destination_path)}.")
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Successfully downloaded {os.path.basename(destination_path)}.")
         return True
     except requests.exceptions.RequestException as e:
-        print(f"[ERROR] Failed to download {url}: {e}")
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Failed to download {url}: {e}")
         return False
     except Exception as e:
-        print(f"[ERROR] An unexpected error occurred: {e}")
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} An unexpected error occurred: {e}")
         return False
 
 
@@ -117,7 +135,6 @@ def download_dataset(remote=False):
         
         # In non-remote mode, only download one image file per category
         if not remote and file_type in ["train_normal", "train_tumor", "test_images"]:
-
             files_to_download = files_to_download[:1]
         
         for remote_file_path in files_to_download:
@@ -125,7 +142,7 @@ def download_dataset(remote=False):
             
             # Skip evaluation_python.zip if remote=True, as per original logic's intent (though it was inverted)
             if "evaluation_python" in file_name and remote:
-                print(f"[INFO] Skipping download of {file_name} in remote mode.")
+                print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Skipping download of {file_name} in remote mode.")
                 continue
 
             # Check if the file exists in train/img, val/img, or test/img
@@ -135,11 +152,11 @@ def download_dataset(remote=False):
             destination_path = os.path.join(target_dir, file_name)
 
             if any(os.path.exists(p) for p in [train_img_path, val_img_path, test_img_path]):
-                print(f"[INFO] Skipping: {file_name} already exists in train/img, val/img, or test/img.")
+                print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Skipping: {file_name} already exists in train/img, val/img, or test/img.")
                 continue
             # check if lesion_annotations.zip already exist in the mask directories train_mask_dir or test_mask_dir
             if file_type in ["train_masks", "test_masks"] and os.path.exists(destination_path):
-                print(f"[INFO] Skipping: {file_name} already exists in {target_dir}.")
+                print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Skipping: {file_name} already exists in {target_dir}.")
                 continue
 
             url = BASE_URL + remote_file_path
@@ -159,7 +176,7 @@ def move_files():
         tumor_subdir = os.path.join(folder_path, "tumor")
         
         if os.path.isdir(tumor_subdir):
-            print(f"[INFO] Processing {tumor_subdir}...")
+            print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Processing {tumor_subdir}...")
             # Move all .png files to the parent directory
             for file_name in os.listdir(tumor_subdir):
                 if file_name.endswith(".png"):
@@ -170,11 +187,11 @@ def move_files():
             # Remove the now-empty 'tumor' subfolder
             try:
                 os.rmdir(tumor_subdir)
-                print(f"[INFO] Deleted empty directory: {tumor_subdir}")
+                print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Deleted empty directory: {tumor_subdir}")
             except OSError as e:
-                print(f"[WARNING] Could not delete {tumor_subdir}: {e}")
+                print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Could not delete {tumor_subdir}: {e}")
         else:
-            print(f"[INFO] No 'tumor' subdirectory in {folder_path}, skipping.")
+            print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} No 'tumor' subdirectory in {folder_path}, skipping.")
 
 def extract_zip(zip_path, extract_to):
     """
@@ -190,10 +207,10 @@ def extract_zip(zip_path, extract_to):
     if os.path.exists(extract_to):
         existing_xmls = set(os.listdir(extract_to))
         if all(xml in existing_xmls for xml in expected_xmls):
-            print(f"[INFO] Directory {extract_to} already exists and contains all expected XMLs. Skipping extraction.")
+            print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Directory {extract_to} already exists and contains all expected XMLs. Skipping extraction.")
             return
         else:
-            print(f"[WARNING] Directory {extract_to} exists but is missing some XMLs. Re-extracting...")
+            print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Directory {extract_to} exists but is missing some XMLs. Re-extracting...")
             shutil.rmtree(extract_to)
             os.makedirs(extract_to)
     else:
@@ -201,24 +218,21 @@ def extract_zip(zip_path, extract_to):
 
     with zipfile.ZipFile(zip_path, "r") as zip_ref:
         zip_ref.extractall(extract_to)
-    print(f"[INFO] Extracted {zip_path} to {extract_to}")
-
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Extracted {zip_path} to {extract_to}")
 
 def download_all_tumor_extract_patches(download = False):
-    """
-    Download all tumor images and extract tumor patches from them to have a balanced dataset.
-    """
+    print(f"{bcolors.HEADER}{bcolors.BOLD}[HEADER]{bcolors.ENDC} Download all tumor images and extract tumor patches")
     camelyon_dir = os.path.join(os.getcwd(), "data", "camelyon16")
     train_img_dir = os.path.join(camelyon_dir, "train", "img")
     train_mask_dir = os.path.join(camelyon_dir, "train", "mask", "annotations")
 
     # Download all tumor images
     if download:
-        print("[INFO] Downloading all tumor images...")
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Downloading all tumor images...")
         for i in range(36, 112): # from validation images to end
             file_name = f"tumor_{i:03d}.tif"
             if os.path.exists(os.path.join(train_img_dir, file_name)):
-                print(f"[INFO] Tumor image {file_name} already exists in {train_img_dir}. Skipping download.")
+                print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Tumor image {file_name} already exists in {train_img_dir}. Skipping download.")
                 continue
             url = BASE_URL + f"CAMELYON16/training/tumor/{file_name}"
             destination_path = os.path.join(train_img_dir, file_name)
@@ -257,15 +271,15 @@ def extract_patches_per_slide(slide_path="tumor_109", patch_size=224, level=3, s
     os.makedirs(level_dir, exist_ok=True)
     patch_save_dir = os.path.join(level_dir, prefix)
     if os.path.exists(patch_save_dir) and len(os.listdir(patch_save_dir)) > 0:
-        print(f"[INFO] Patches for {slide_path} already extracted, skipping.")
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patches for {slide_path} already extracted, skipping.")
         return
     os.makedirs(patch_save_dir, exist_ok=True)
 
-    print(f"[DEBUG] Processing file: {slide_path} with XML: {xml_path}")
+    print(f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Processing file: {slide_path} with XML: {xml_path}")
     try:
         slide = openslide.OpenSlide(slide_path)
     except Exception as e:
-        print(f"[ERROR] Could not open {slide_path}: {e}")
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Could not open {slide_path}: {e}")
         return
     width, height = slide.level_dimensions[level]
     downsample = slide.level_downsamples[level]
@@ -288,11 +302,11 @@ def extract_patches_per_slide(slide_path="tumor_109", patch_size=224, level=3, s
             if pad and (pad_w > 0 or pad_h > 0):
                 mask = ImageOps.expand(mask, (0, 0, pad_w, pad_h), fill=0)
         except Exception as e:
-            print(f"[WARNING] Failed to parse XML for {slide_path}: {e}")
+            print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Failed to parse XML for {slide_path}: {e}")
     else:
-        print(f"[INFO] No annotation found for {slide_path}, treating as normal.")
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} No annotation found for {slide_path}, treating as normal.")
 
-    print(f"[INFO] Processing {slide_path} at level {level} (size: {width}x{height}, padded: {padded_width}x{padded_height})")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Processing {slide_path} at level {level} (size: {width}x{height}, padded: {padded_width}x{padded_height})")
 
     patch_count = 0
     for x in range(0, padded_width, stride):
@@ -336,7 +350,7 @@ def extract_patches_per_slide(slide_path="tumor_109", patch_size=224, level=3, s
                 patch_count += 1
 
     print(
-        f"[INFO] Patch extraction complete for {slide_path} at level {level}. Total patches: {patch_count}"
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patch extraction complete for {slide_path} at level {level}. Total patches: {patch_count}"
     )
 
 def parse_xml_mask(xml_path, level_dims, slide, level):
@@ -351,7 +365,7 @@ def parse_xml_mask(xml_path, level_dims, slide, level):
     try:
         tree = etree.parse(xml_path)
     except etree.XMLSyntaxError as e:
-        print(f"Error parsing XML file {xml_path}: {e}")
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Error parsing XML file {xml_path}: {e}")
         return None
 
     # Compute scaling factors based on actual dimensions
@@ -373,7 +387,7 @@ def parse_xml_mask(xml_path, level_dims, slide, level):
                 scaled_y = int(y * scale_y)
                 coords.append((scaled_x, scaled_y))
             except (ValueError, TypeError) as e:
-                print(f"Warning: Could not parse coordinate (X,Y) from XML for {xml_path}: {e}")
+                print(f"{bcolors.WARNING}Warning: Could not parse coordinate (X,Y) from XML for {xml_path}: {e}{bcolors.ENDC}")
                 continue
         if coords:
             draw.polygon(coords, outline=255, fill=255)
@@ -391,8 +405,10 @@ def get_dataloaders(patch_dir, transform, test_ratio=0.2, batch_size=32):
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     return train_loader, val_loader, train_dataset, val_dataset
+
+
 def train_resnet_classifier(level=3):
-    print("[INFO] Training ResNet18 classifier with proper validation split...")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training ResNet18 classifier...")
     patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
 
     transform = transforms.Compose([
@@ -411,7 +427,7 @@ def train_resnet_classifier(level=3):
     optimizer = Adam(model.parameters(), lr=1e-4)
     criterion = nn.CrossEntropyLoss()
 
-    num_epochs = 20
+    num_epochs = 5
     for epoch in range(num_epochs):
         model.train()
         total_loss, correct = 0, 0
@@ -441,21 +457,10 @@ def train_resnet_classifier(level=3):
         print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
 
     torch.save(model.state_dict(), "src/models/resnet18_patch_classifier.pth")
-    print("[INFO] Training complete. Model saved.")
-
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Model saved.")
 
 def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=False, test=False):
-    """
-    Extract patches from WSIs at a specified level, apply mask overlays, and save tumor vs normal labels.
-    Only extracts patches if they have not already been extracted for a given image.
-    Parameters:
-    - patch_size: int, size of the patches to extract.
-    - level: int, level of the WSI to extract patches from.
-    - stride: int, stride for patch extraction.
-    - pad: bool, if True, pad the image to cover all regions.
-    - only_tumor: bool, if True, only extract tumor patches from tumor images.
-    """
-    print(f"[INFO] Extracting patches at level {level}...")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Extracting patches at level {level}...")
     stride = stride or patch_size
 
     # Set patch size according to level
@@ -482,7 +487,7 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
         # Check if patches for this image already exist
         patch_save_dir = os.path.join(level_dir, prefix)
         if os.path.exists(patch_save_dir) and len(os.listdir(patch_save_dir)) > 0:
-            print(f"[INFO] Patches for {file} already extracted, skipping.")
+            print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patches for {file} already extracted, skipping.")
             continue
         os.makedirs(patch_save_dir, exist_ok=True)
 
@@ -492,11 +497,11 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
             xml_path = os.path.join(annot_dir_test, xml_name)
         elif file.startswith("normal_") or file.startswith("tumor_"):
             xml_path = os.path.join(annot_dir_train, xml_name)
-        print(f"[DEBUG] Processing file: {wsi_path} with XML: {xml_path}")
+        print(f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Processing file: {wsi_path} with XML: {xml_path}")
         try:
             slide = openslide.OpenSlide(wsi_path)
         except Exception as e:
-            print(f"[ERROR] Could not open {wsi_path}: {e}")
+            print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Could not open {wsi_path}: {e}")
             continue
         downsample = slide.level_downsamples[level]
         width, height = slide.level_dimensions[level]
@@ -519,11 +524,11 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
                 if pad and (pad_w > 0 or pad_h > 0):
                     mask = ImageOps.expand(mask, (0, 0, pad_w, pad_h), fill=0)
             except Exception as e:
-                print(f"[WARNING] Failed to parse XML for {file}: {e}")
+                print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Failed to parse XML for {file}: {e}")
         else:
-            print(f"[INFO] No annotation found for {file}, treating as normal.")
+            print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} No annotation found for {file}, treating as normal.")
 
-        print(f"[INFO] Processing {file} at level {level} (size: {width}x{height}, padded: {padded_width}x{padded_height})")
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Processing {file} at level {level} (size: {width}x{height}, padded: {padded_width}x{padded_height})")
 
         patch_count = 0
         for x in range(0, padded_width, stride):
@@ -571,7 +576,7 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
 
 
         print(
-            f"[INFO] Patch extraction complete for {file} at level {level}. Total patches: {patch_count}"
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patch extraction complete for {file} at level {level}. Total patches: {patch_count}"
         )
 
 def count_number_tumor_patches(level=3):
@@ -580,7 +585,7 @@ def count_number_tumor_patches(level=3):
     """
     patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
     if not os.path.exists(patch_dir):
-        print(f"[ERROR] Patch directory '{patch_dir}' does not exist. Please run patch extraction first.")
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patch directory '{patch_dir}' does not exist. Please run patch extraction first.")
         return
 
     total_tumor = 0
@@ -597,12 +602,12 @@ def count_number_tumor_patches(level=3):
                 slides_with_no_tumor.append(slide_name)
             total_normal += sum(1 for f in os.listdir(slide_path) if f.endswith("_normal.png"))
         if (total_tumor != 0 or slide_path.endswith("_tumor.png")) and slide_name.startswith("normal_"):
-            print(f"[WARNING] {slide_name} finds a tumor, and it is normal")
+            print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} {slide_name} finds a tumor, and it is normal")
 
-    print(f"[INFO] Total tumor patches at level {level}: {total_tumor}")
-    print(f"[INFO] Total non-tumor patches at level {level}: {total_normal}")
-    print(f"[INFO] Total slides with no tumor patches at level {level}: {len(slides_with_no_tumor)}")
-    print(f"[INFO] Slides with no tumor patches: {', '.join(slides_with_no_tumor)}" if slides_with_no_tumor else "All slides have tumor patches.")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Total tumor patches at level {level}: {total_tumor}")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Total non-tumor patches at level {level}: {total_normal}")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Total slides with no tumor patches at level {level}: {len(slides_with_no_tumor)}")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Slides with no tumor patches: {', '.join(slides_with_no_tumor)}" if slides_with_no_tumor else f"{bcolors.INFO}All slides have tumor patches.{bcolors.ENDC}")
 
 
 def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
@@ -619,13 +624,13 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
-    model_path = os.path.join(os.getcwd(), "models", model_path)
+    model_path = os.path.join(os.getcwd(), "src", "models", model_path)
     patch_dir = os.path.join(
         os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
     )
     
     if not os.path.exists(patch_dir) or not os.listdir(patch_dir):
-        print(f"[ERROR] Patch directory '{patch_dir}' does not exist or is empty. Please run patch extraction first.")
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patch directory '{patch_dir}' does not exist or is empty. Please run patch extraction first.")
         return
 
     dataset = PatchDataset(patch_dir, transform=transform)
@@ -633,11 +638,10 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
     loader = torch.utils.data.DataLoader(dataset, batch_size=128, shuffle=False, num_workers=os.cpu_count() or 1) 
     
     print(
-        f"[INFO] Extracting features from patches at level {level} with patch directory: {patch_dir}, which exists: {os.path.exists(patch_dir)}"
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Extracting features from patches at level {level} with patch directory: {patch_dir}, which exists: {os.path.exists(patch_dir)}"
     )
     print(
-        "[INFO] Listing first 5 subdirectories in patch_dir:",
-        os.listdir(patch_dir)[:5] if os.path.exists(patch_dir) else "Not found",
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Listing first 5 subdirectories in patch_dir: {os.listdir(patch_dir)[:5] if os.path.exists(patch_dir) else 'Not found'}"
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -678,7 +682,7 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
     
     if not features:
         print(
-            "[ERROR] No features were extracted. Check your patch directory and dataset. "
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No features were extracted. Check your patch directory and dataset. "
             "It might be that PatchDataset found no images, or data loader was empty."
         )
         return
@@ -695,13 +699,11 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
     with open(paths_save_path, "w") as f:
         for p in paths:
             f.write(f"{p}\n")
-    print(f"[INFO] Features saved to {features_save_path}, labels to {labels_save_path}, paths to {paths_save_path}")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Features saved to {features_save_path}, labels to {labels_save_path}, paths to {paths_save_path}")
 
 
 def create_validation_set(remote=False):
-    """
-    Create validation set: exactly 10 files (5 normal + 5 tumor).
-    """
+    print(f"{bcolors.HEADER}{bcolors.BOLD}[HEADER]{bcolors.ENDC} Create validation set")
     src_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img")
     dst_dir = os.path.join(os.getcwd(), "data", "camelyon16", "val", "img")
     os.makedirs(dst_dir, exist_ok=True)
@@ -724,14 +726,11 @@ def create_validation_set(remote=False):
             shutil.move(os.path.join(mask_src_dir, f), os.path.join(mask_dst_dir, f))
 
     print(
-        f"[INFO] Validation set created with {len(normal_files)} normal and {len(tumor_files)} tumor files."
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Validation set created with {len(normal_files)} normal and {len(tumor_files)} tumor files."
     )
 
-
 def check_structure():
-    """
-    Check if the directory structure is correct.
-    """
+    print(f"{bcolors.HEADER}{bcolors.BOLD}[HEADER]{bcolors.ENDC} Checking directory structure...")
     expected_structure = [
         "data/camelyon16/train/img",
         "data/camelyon16/val/img",
@@ -743,7 +742,7 @@ def check_structure():
 
     for path in expected_structure:
         if not os.path.exists(path):
-            print(f"[ERROR] Missing expected directory: {path}")
+            print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Missing expected directory: {path}")
             if path.endswith("normal_002"):
                 group_patches_by_slide(
                     patch_root=os.path.join(
@@ -751,12 +750,11 @@ def check_structure():
                     )
                 )
             return False
-    print("[INFO] Directory structure is correct.")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Directory structure is correct.")
     return True
 
-
 def prepare_data():
-    print("[INFO] Preparing data...")
+    print(f"{bcolors.HEADER}{bcolors.BOLD}[HEADER]{bcolors.ENDC} Preparing data...")
 
     # Extract training masks
     train_zip = os.path.join(
@@ -766,7 +764,7 @@ def prepare_data():
         os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
     )
     if not os.path.exists(train_zip):
-        print("[ERROR] Training masks zip file not found. Please download the dataset first.")
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Training masks zip file not found. Please download the dataset first.")
     else:
         extract_zip(train_zip, train_extract_to)
 
@@ -778,12 +776,11 @@ def prepare_data():
         os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
     )
     if not os.path.exists(test_zip):
-        print("[ERROR] Testing masks zip file not found. Please download the dataset first.")
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Testing masks zip file not found. Please download the dataset first.")
     else:
         extract_zip(test_zip, test_extract_to)
 
-    print("[INFO] Data preparation completed.")
-
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Data preparation completed.")
 
 def images_downloaded():
     img_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img")
@@ -796,33 +793,110 @@ def patches_extracted(patch_level):
 def features_extracted(patch_level):
     return os.path.exists(f"patch_features_{patch_level}.npy") and os.path.exists(f"patch_labels_{patch_level}.npy")
 
-def test_resnet_classifier():
+def evaluate_resnet_classifier(patch_level=3):
+    """ 
+    Evaluate the ResNet18 classifier on validation patches.
     """
-    Test the ResNet18 classifier on the extracted patches.
-    """
-    patch_level = 3  # Change as needed
-    features_path = f"patch_features_{patch_level}.npy"
-    labels_path = f"patch_labels_{patch_level}.npy"
-
-    if not os.path.exists(features_path) or not os.path.exists(labels_path):
-        print(f"[ERROR] Features or labels not found for level {patch_level}. Please run feature extraction first.")
+    model_path = os.path.join(os.getcwd(), "src", "models", "resnet18_patch_classifier.pth")
+    if not os.path.exists(model_path):
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Model file '{model_path}' does not exist. Please train the model first.")
         return
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Evaluating ResNet18 classifier...")
 
-    features = np.load(features_path)
-    labels = np.load(labels_path)
+    patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{patch_level}")
+
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    _, val_loader, _, val_dataset = get_dataloaders(
+        patch_dir, transform, test_ratio=0.2, batch_size=64
+    )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ResNet18Classifier().to(device)
-    model.load_state_dict(torch.load("src/models/resnet18_patch_classifier.pth", map_location=device))
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
-    with torch.no_grad():
-        inputs = torch.tensor(features, dtype=torch.float32).to(device)
-        outputs = model(inputs)
-        _, preds = torch.max(outputs, 1)
+    correct = 0
+    total = 0
 
-    accuracy = (preds.cpu().numpy() == labels).mean()
-    print(f"[INFO] ResNet18 classifier accuracy on level {patch_level} patches: {accuracy:.4f}")
+    with torch.no_grad():
+        for imgs, labels, _ in val_loader:
+            imgs, labels = imgs.to(device), labels.to(device)
+            outputs = model(imgs)
+            preds = outputs.argmax(dim=1)
+            correct += (preds == labels).sum().item()
+            total += labels.size(0)
+
+    acc = correct / total
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Classifier accuracy on validation patches: {acc:.4f}")
+
+import numpy as np
+from sklearn.decomposition import PCA
+from sklearn.manifold import TSNE
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score, confusion_matrix
+from sklearn.model_selection import train_test_split
+
+def validate_resnet_classifier(model_path="resnet18_patch_classifier.pth"):
+    """
+    Sanity check for extracted patch features — no plotting, CLI only.
+    """
+    features_path = os.path.join(os.getcwd(), "patch_features_3.npy")
+    labels_path = os.path.join(os.getcwd(), "patch_labels_3.npy")
+    if not os.path.exists(features_path) or not os.path.exists(labels_path):
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Features or labels not found. Please run feature extraction first.")
+        return
+    features = np.load(features_path)     # shape: (N, 512)
+    labels = np.load(labels_path)         # shape: (N,)
+
+    print(f"[INFO] Feature shape: {features.shape}")
+    print(f"[INFO] Labels shape: {labels.shape}")
+    print(f"[INFO] Label distribution (0=normal, 1=tumor): {np.bincount(labels)}")
+
+    # --------------------------------------
+    # 1. PCA - print explained variance ratio
+    # --------------------------------------
+    pca = PCA(n_components=2)
+    features_pca = pca.fit_transform(features)
+    print(f"[INFO] PCA explained variance ratio (2 components): {pca.explained_variance_ratio_}")
+
+    # Print means of each class in PCA space
+    for cls in [0, 1]:
+        mean_coords = features_pca[labels == cls].mean(axis=0)
+        print(f"[INFO] PCA mean for class {cls}: {mean_coords}")
+
+    # --------------------------------------
+    # 2. t-SNE - print mean coordinates to see separation
+    # --------------------------------------
+    tsne = TSNE(n_components=2, perplexity=30, n_iter=1000, random_state=42)
+    features_tsne = tsne.fit_transform(features)
+    for cls in [0, 1]:
+        mean_coords = features_tsne[labels == cls].mean(axis=0)
+        print(f"[INFO] t-SNE mean for class {cls}: {mean_coords}")
+
+    # --------------------------------------
+    # 3. Logistic Regression
+    # --------------------------------------
+    X_train, X_test, y_train, y_test = train_test_split(
+        features, labels, test_size=0.2, random_state=42, stratify=labels
+    )
+
+    clf = LogisticRegression(max_iter=1000, class_weight="balanced")
+    clf.fit(X_train, y_train)
+    y_pred = clf.predict(X_test)
+
+    acc = accuracy_score(y_test, y_pred)
+    cm = confusion_matrix(y_test, y_pred)
+
+    print(f"[INFO] Logistic Regression Accuracy: {acc:.4f}")
+    print("[INFO] Confusion Matrix:")
+    print(cm)
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="Camelyon Dataset Processing")
@@ -832,8 +906,9 @@ def main():
     parser.add_argument("--patch_level", type=str, default="3", help="WSI level for patch extraction (0, 1, 2, 3, or 'all' for all levels)")
     parser.add_argument("-prep", "--prepare", action="store_true", help="Prepare data")
     parser.add_argument("-val", "--validation", action="store_true", help="Create validation set")
-    parser.add_argument("-train", "--train", action="store_true", help="Train U-Net model")
-    parser.add_argument("-test", "--test", action="store_true", help="Test U-Net model")
+    parser.add_argument("--validate", action="store_true", help="Validate Resnet model (sanity check for extracted patch features)")
+    parser.add_argument("-train", "--train", action="store_true", help="Train Resnet model")
+    parser.add_argument("-eval", "--evaluate", action="store_true", help="Evaluate Resnet model")
     parser.add_argument("--extract_features", action="store_true", help="Extract features from patches")
     parser.add_argument("--check_structure", action="store_true", help="Check directory structure")
     parser.add_argument("--run_evaluation", action="store_true", help="Run CAMELYON16 evaluation script.")
@@ -848,7 +923,7 @@ def main():
     input_args = {arg.lstrip('-').replace('-', '_') for arg in sys.argv[1:] if arg.startswith('-')}
     unknown_args = input_args - known_args
     if unknown_args:
-        print(f"[ERROR] Unknown command line arguments: {', '.join(unknown_args)}")
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Unknown command line arguments: {', '.join(unknown_args)}")
         sys.exit(1)
     
     args = parser.parse_args()
@@ -863,7 +938,7 @@ def main():
     # Extract patches
     if args.patch:
         if not images_downloaded():
-            print("[ERROR] Images must be downloaded before extracting patches.")
+            print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Images must be downloaded before extracting patches.")
             return
         if args.patch_level == "all":
             for lvl in [0, 1, 2, 3]:
@@ -877,17 +952,17 @@ def main():
         patch_levels = [0, 1, 2, 3] if args.patch_level == "all" else [int(args.patch_level)]
         for lvl in patch_levels:
             if not patches_extracted(lvl):
-                print(f"[ERROR] Patches must be extracted at level {lvl} before extracting features.")
+                print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patches must be extracted at level {lvl} before extracting features.")
                 return
         extract_features(level=int(args.patch_level) if args.patch_level != "all" else 3)  # default to level 3 if all
 
     # Train model
     if args.train:
         if not images_downloaded():
-            print("[ERROR] Images must be downloaded before training.")
+            print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Images must be downloaded before training.")
             return
         if not patches_extracted(patch_level=args.patch_level):
-            print("[ERROR] Patches must be extracted before training.")
+            print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patches must be extracted before training.")
             return
         train_resnet_classifier(args.patch_level)
 
@@ -895,8 +970,10 @@ def main():
         prepare_data()
     if args.validation:
         create_validation_set(args.remote)
-    if args.test:
-        pass
+    if args.validate:
+        validate_resnet_classifier()
+    if args.evaluate:
+        evaluate_resnet_classifier(args.patch_level)
     if args.check_structure:
         check_structure()
     if args.balance_dataset:
@@ -910,14 +987,14 @@ def main():
         """
         Calculate False Positives (FPs), True Positives (TPs), and generates a Free-Response Receiver Operating Characteristic (FROC) curve. 
         """
-        print("[INFO] Running CAMELYON16 evaluation script.")
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Running CAMELYON16 evaluation script.")
         mask_folder_for_eval = os.path.join(os.getcwd(), "data", "camelyon16", "test", "mask")
         results_folder_for_eval = os.path.join(os.getcwd(), "models", "first_model", "model_predictions_csv") 
         
         if not os.path.exists(mask_folder_for_eval):
-            print(f"[ERROR] Evaluation mask folder '{mask_folder_for_eval}' not found. Please generate TIFF masks from XML annotations first.")
+            print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Evaluation mask folder '{mask_folder_for_eval}' not found. Please generate TIFF masks from XML annotations first.")
         elif not os.path.exists(results_folder_for_eval):
-             print(f"[ERROR] Model results folder '{results_folder_for_eval}' not found. Please run your detection model first.")
+             print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Model results folder '{results_folder_for_eval}' not found. Please run your detection model first.")
         else:
             result_file_list = [each for each in os.listdir(results_folder_for_eval) if each.endswith('.csv')]
             
@@ -939,7 +1016,7 @@ def main():
                 if (is_tumor):
                     maskDIR = os.path.join(mask_folder_for_eval, case[0:-4]) + '_Mask.tif'
                     if not os.path.exists(maskDIR):
-                        print(f"[WARNING] Mask TIFF '{maskDIR}' not found for tumor case. Skipping.")
+                        print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Mask TIFF '{maskDIR}' not found for tumor case. Skipping.")
                         continue # Skip to next case if mask is missing
                     evaluation_mask = computeEvaluationMask(maskDIR, L0_RESOLUTION, EVALUATION_MASK_LEVEL) # Python 3?
                     ITC_labels = computeITCList(evaluation_mask, L0_RESOLUTION, EVALUATION_MASK_LEVEL) 
@@ -963,7 +1040,7 @@ def main():
                 # plot FROC curve
                 plotFROC(total_FPs, total_sensitivity) # Update for Python 3
             else:
-                print("[WARNING] No cases processed for FROC evaluation.")
+                print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} No cases processed for FROC evaluation.")
 
 if __name__ == "__main__":
     main()
