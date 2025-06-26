@@ -8,10 +8,9 @@ from PIL import Image
 import os
 
 class ResNet18FeatureExtractor(nn.Module):
-    def __init__(self, weight_path=None):
+    def __init__(self, weight_path="./resnet18_patch_classifier.pth"):
         super().__init__()
         resnet = models.resnet18(weights=None)  # Start with uninitialized weights
-
         if weight_path and os.path.exists(weight_path):
             state_dict = torch.load(weight_path, map_location="cpu")
             # Remove the classifier layer weights
