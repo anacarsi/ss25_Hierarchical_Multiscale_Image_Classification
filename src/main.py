@@ -635,7 +635,7 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
 
     dataset = PatchDataset(patch_dir, transform=transform)
     # Use higher batch size and num_workers for feature extraction as it's typically I/O bound
-    loader = torch.utils.data.DataLoader(dataset, batch_size=128, shuffle=False, num_workers=os.cpu_count() or 1) 
+    loader = torch.utils.data.DataLoader(dataset, batch_size=128, shuffle=False, num_workers=2) 
     
     print(
         f"{bcolors.INFO}[INFO]{bcolors.ENDC} Extracting features from patches at level {level} with patch directory: {patch_dir}, which exists: {os.path.exists(patch_dir)}"
