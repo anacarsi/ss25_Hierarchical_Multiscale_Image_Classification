@@ -18,7 +18,6 @@ from sklearn.decomposition import PCA
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix
 from sklearn.model_selection import train_test_split
-import seaborn as sns
 
 """"
 os.add_dll_directory(
@@ -27,12 +26,11 @@ os.add_dll_directory(
 """
 import openslide
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from models.resnet import ResNet18Classifier, ResNet18FeatureExtractor
+from models.resnet import ResNet18Classifier, ResNet18FeatureExtractor, UnifiedResNet
 from datasets.patch_dataset import PatchDataset
 from utils.evaluation_FROC import computeEvaluationMask, computeITCList, readCSVContent, compute_FP_TP_Probs, computeFROC, plotFROC
-from utils.structure import group_patches_by_slide
+from models.simclr import pretrain_simclr, get_simclr_transform
 import zipfile
-from PIL import Image
 
 class bcolors:
     HEADER = '\033[95m'
@@ -45,6 +43,10 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+# Balance the dataset by limiting the number of patches per class. At level, max 7483 tumor patches and 7000 normal patches.
+SAMPLES_PER_CLASS = 7480
 
 # Base URL for the CAMELYON16 dataset
 BASE_URL = "https://s3.ap-northeast-1.wasabisys.com/gigadb-datasets/live/pub/10.5524/100001_101000/100439/"
@@ -96,7 +98,6 @@ def download_file(url, destination_path):
     except Exception as e:
         print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} An unexpected error occurred: {e}")
         return False
-
 
 def download_dataset(remote=False):
     """
@@ -393,19 +394,20 @@ def parse_xml_mask(xml_path, level_dims, slide, level):
             draw.polygon(coords, outline=255, fill=255)
     return mask
 
-
-def get_dataloaders(patch_dir, transform, test_ratio=0.2, batch_size=32):
+def get_dataloaders(patch_dir, transform, test_ratio=0.2, batch_size=32, balanced=False):
     slide_dirs = [d for d in os.listdir(patch_dir) if os.path.isdir(os.path.join(patch_dir, d))]
     train_slides, val_slides = train_test_split(slide_dirs, test_size=test_ratio, random_state=42)
 
-    train_dataset = PatchDataset(patch_dir, slide_names=train_slides, transform=transform)
+    if balanced:
+        train_dataset = PatchDataset(patch_dir, slide_names=train_slides, transform=transform, balanced=True, max_samples=SAMPLES_PER_CLASS)
+    else:
+        train_dataset = PatchDataset(patch_dir, slide_names=train_slides, transform=transform)
     val_dataset = PatchDataset(patch_dir, slide_names=val_slides, transform=transform)
 
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
 
     return train_loader, val_loader, train_dataset, val_dataset
-
 
 def train_resnet_classifier(level=3):
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training ResNet18 classifier...")
@@ -421,7 +423,6 @@ def train_resnet_classifier(level=3):
         patch_dir, transform, test_ratio=0.2, batch_size=32
     )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ResNet18Classifier().to(device)
 
     optimizer = Adam(model.parameters(), lr=1e-4)
@@ -457,7 +458,74 @@ def train_resnet_classifier(level=3):
         print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
 
     torch.save(model.state_dict(), "src/models/resnet18_patch_classifier.pth")
-    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Model saved.")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Model saved resnet18_patch_classifier.pth.")
+
+def train_resnet_classifier_strategic(level=3, strategy="balanced"):
+    assert strategy in {"balanced", "weighted_loss", "self_supervised"}, "Invalid strategy option"
+
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training ResNet18 classifier using strategy: {strategy}...")
+    patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
+
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    if strategy == "self_supervised":
+        if not os.path.exists("simclr_encoder.pth"):
+            pretrain_simclr(patch_dir, epochs=10)
+
+        model = ResNet18Classifier(pretrained_weights_path="simclr_encoder.pth").to(device)
+        train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(patch_dir, transform)
+        criterion = nn.CrossEntropyLoss()
+
+    elif strategy == "balanced":
+        train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(patch_dir, transform, balanced=True)
+        model = ResNet18Classifier().to(device)
+        criterion = nn.CrossEntropyLoss()
+
+    elif strategy == "weighted_loss":
+        train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(patch_dir, transform)
+        class_counts = train_dataset.get_class_counts()
+        total = sum(class_counts.values())
+        weights = [total / class_counts[i] for i in range(len(class_counts))]
+        weights = torch.FloatTensor(weights)
+        model = ResNet18Classifier().to(device)
+        criterion = nn.CrossEntropyLoss(weight=weights)
+
+    optimizer = Adam(model.parameters(), lr=1e-4)
+
+    # TRAINING LOOP (unchanged)
+    for epoch in range(5):
+        model.train()
+        total_loss, correct = 0, 0
+        for imgs, labels, _ in train_loader:
+            imgs, labels = imgs.to(device), labels.to(device)
+            optimizer.zero_grad()
+            outputs = model(imgs)
+            loss = criterion(outputs, labels)
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+            correct += (outputs.argmax(1) == labels).sum().item()
+
+        train_acc = correct / len(train_dataset)
+
+        # Validation
+        model.eval()
+        val_correct = 0
+        with torch.no_grad():
+            for imgs, labels, _ in val_loader:
+                imgs, labels = imgs.to(device), labels.to(device)
+                outputs = model(imgs)
+                val_correct += (outputs.argmax(1) == labels).sum().item()
+
+        val_acc = val_correct / len(val_dataset)
+        print(f"Epoch {epoch+1}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
+
+    torch.save(model.state_dict(), f"src/models/resnet18_patch_classifier_{strategy}.pth")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete.")
 
 def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=False, test=False):
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Extracting patches at level {level}...")
@@ -609,7 +677,6 @@ def count_number_tumor_patches(level=3):
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Total slides with no tumor patches at level {level}: {len(slides_with_no_tumor)}")
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Slides with no tumor patches: {', '.join(slides_with_no_tumor)}" if slides_with_no_tumor else f"{bcolors.INFO}All slides have tumor patches.{bcolors.ENDC}")
 
-
 def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
     """
     Extract features from the patches using a ResNet18 model.
@@ -655,7 +722,6 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
               "Extracting features with ImageNet pre-trained weights only. "
               "Consider running `train_resnet_classifier()` first.")
 
-    model = ResNet18FeatureExtractor().to(device)
     # Load the state_dict and filter out the 'fc' layer weights
     pretrained_dict = full_classifier_model.state_dict()
     model_dict = model.state_dict()
@@ -701,6 +767,43 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
             f.write(f"{p}\n")
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Features saved to {features_save_path}, labels to {labels_save_path}, paths to {paths_save_path}")
 
+# Feature extraction function
+def extract_features_with_simclr(level=3, simclr_encoder_path="simclr_encoder.pth"):
+    transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
+    patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
+    if not os.path.exists(patch_dir) or not os.listdir(patch_dir):
+        print(f"[ERROR] Patch directory {patch_dir} is missing or empty.")
+        return
+
+    dataset = PatchDataset(patch_dir, transform=transform)
+    loader = DataLoader(dataset, batch_size=128, shuffle=False, num_workers=2)
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = UnifiedResNet(pretrained_weights_path=simclr_encoder_path, classifier=False).to(device)
+    model.eval()
+
+    features, labels, paths = [], [], []
+
+    with torch.no_grad():
+        for imgs, lbls, img_paths in tqdm(loader, desc="Extracting Features"):
+            feats = model(imgs.to(device))
+            features.append(feats.cpu())
+            labels.extend(lbls.tolist())
+            paths.extend(img_paths)
+
+    features = torch.cat(features, dim=0)
+    np.save(f"patch_features_{level}.npy", features.numpy())
+    np.save(f"patch_labels_{level}.npy", np.array(labels))
+    with open(f"patch_paths_{level}.txt", "w") as f:
+        for p in paths:
+            f.write(f"{p}\n")
+
+    print(f"[INFO] Feature extraction complete: {features.shape[0]} patches saved.")
 
 def create_validation_set(remote=False):
     print(f"{bcolors.HEADER}{bcolors.BOLD}[HEADER]{bcolors.ENDC} Create validation set")
@@ -728,30 +831,6 @@ def create_validation_set(remote=False):
     print(
         f"{bcolors.INFO}[INFO]{bcolors.ENDC} Validation set created with {len(normal_files)} normal and {len(tumor_files)} tumor files."
     )
-
-def check_structure():
-    print(f"{bcolors.HEADER}{bcolors.BOLD}[HEADER]{bcolors.ENDC} Checking directory structure...")
-    expected_structure = [
-        "data/camelyon16/train/img",
-        "data/camelyon16/val/img",
-        "data/camelyon16/test/img",
-        "data/camelyon16/train/mask",
-        "data/camelyon16/test/mask",
-        "data/camelyon16/patches/level_3/normal_002", # to check expected patch struct
-    ]
-
-    for path in expected_structure:
-        if not os.path.exists(path):
-            print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Missing expected directory: {path}")
-            if path.endswith("normal_002"):
-                group_patches_by_slide(
-                    patch_root=os.path.join(
-                        os.getcwd(), "data", "camelyon16", "patches", "level_3"
-                    )
-                )
-            return False
-    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Directory structure is correct.")
-    return True
 
 def prepare_data():
     print(f"{bcolors.HEADER}{bcolors.BOLD}[HEADER]{bcolors.ENDC} Preparing data...")
@@ -834,13 +913,6 @@ def evaluate_resnet_classifier(patch_level=3):
     acc = correct / total
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Classifier accuracy on validation patches: {acc:.4f}")
 
-import numpy as np
-from sklearn.decomposition import PCA
-from sklearn.manifold import TSNE
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, confusion_matrix
-from sklearn.model_selection import train_test_split
-
 def validate_resnet_classifier(model_path="resnet18_patch_classifier.pth"):
     """
     Sanity check for extracted patch features — no plotting, CLI only.
@@ -896,8 +968,6 @@ def validate_resnet_classifier(model_path="resnet18_patch_classifier.pth"):
     print("[INFO] Confusion Matrix:")
     print(cm)
 
-
-
 def main():
     parser = argparse.ArgumentParser(description="Camelyon Dataset Processing")
     parser.add_argument("--download", action="store_true", help="Download CAMELYON16 dataset")
@@ -910,7 +980,6 @@ def main():
     parser.add_argument("-train", "--train", action="store_true", help="Train Resnet model")
     parser.add_argument("-eval", "--evaluate", action="store_true", help="Evaluate Resnet model")
     parser.add_argument("--extract_features", action="store_true", help="Extract features from patches")
-    parser.add_argument("--check_structure", action="store_true", help="Check directory structure")
     parser.add_argument("--run_evaluation", action="store_true", help="Run CAMELYON16 evaluation script.")
     parser.add_argument("--balance_dataset", action="store_true", help="Balance dataset by downloading all tumor images and extracting patches from them.")
     parser.add_argument("--count_tumor_patches", action="store_true", help="Count number of tumor patches at a given level.")
@@ -974,8 +1043,6 @@ def main():
         validate_resnet_classifier()
     if args.evaluate:
         evaluate_resnet_classifier(args.patch_level)
-    if args.check_structure:
-        check_structure()
     if args.balance_dataset:
         download_all_tumor_extract_patches()
     if args.count_tumor_patches:
