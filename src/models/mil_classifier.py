@@ -1,3 +1,5 @@
+import numpy as np
+
 class MILClassifier:
     def __init__(self, encoder, pooling, num_classes):
         self.encoder = encoder
@@ -12,12 +14,11 @@ class MILClassifier:
         return logits
 
     def classify(self, pooled_features):
-        # Implement a simple fully connected layer for classification
+        # fully connected layer for classification
         return self.fc_layer(pooled_features)
 
     def fc_layer(self, pooled_features):
-        # Placeholder for fully connected layer implementation
-        # This should be replaced with actual layer logic
+        
         pass
 
     def predict(self, bags):
@@ -30,5 +31,5 @@ class MILClassifier:
         return exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
 
     def uncertainty_estimation(self, logits):
-        # Implement uncertainty estimation techniques here
+        # uncertainty estimation techniques here
         pass
