@@ -139,7 +139,7 @@ def main():
     plot_logreg_confusion(features, labels)
 
     # ---- Unlabeled Patch Overlay ----
-    patch_dir = os.path.join(os.getcwd(), "..", "data", "camelyon16", "train", "patches")
+    patch_dir = os.path.join(os.getcwd(), "..", "data", "camelyon16", "patches", "level_3")
     wsi_dir = os.path.join(os.getcwd(), "..", "data", "camelyon16", "train", "img")
     unlabeled_patches = find_unlabeled_patches(patch_dir)
     slide_to_check = list(unlabeled_patches.keys())[0] if unlabeled_patches else None
