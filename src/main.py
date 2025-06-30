@@ -69,6 +69,15 @@ CAMELYON16_FILES = {
     "test_masks": ["CAMELYON16/testing/lesion_annotations.zip", "CAMELYON16/testing/evaluation/evaluation_python.zip"],
 }
 
+DOWNLOADED_FILES = {
+    "train_normal": 
+        [f"normal_{i:03d}" for i in range(1, 112)],
+    "train_tumor":
+        [f"tumor_{i:03d}" for i in range(1, 112)],
+    "test_images":
+        [f"test_{i:03d}" for i in range(1, 51)],
+}
+
 
 def download_file(url, destination_path):
     """
@@ -271,7 +280,17 @@ def extract_patches_per_slide(slide_path="tumor_109", patch_size=224, level=3, s
     level_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
     os.makedirs(level_dir, exist_ok=True)
     patch_save_dir = os.path.join(level_dir, prefix)
-    if os.path.exists(patch_save_dir) and len(os.listdir(patch_save_dir)) > 0:
+    # Only skip extraction if the directory exists, is not empty, and contains both _normal.png and _tumor.png files
+    if any(f.endswith("_normal.png") for f in os.listdir(patch_save_dir)):
+        print(f"DEBUG: we are on patch {slide_path} with normal")
+    else:
+        print(f"DEBUG: we are on patch {slide_path} without normal and we should check this")
+    if (
+        os.path.exists(patch_save_dir)
+        and len(os.listdir(patch_save_dir)) > 0
+        and any(f.endswith("_normal.png") for f in os.listdir(patch_save_dir))
+        and any(f.endswith("_tumor.png") for f in os.listdir(patch_save_dir))
+    ):
         print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patches for {slide_path} already extracted, skipping.")
         return
     os.makedirs(patch_save_dir, exist_ok=True)
@@ -554,7 +573,12 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
 
         # Check if patches for this image already exist
         patch_save_dir = os.path.join(level_dir, prefix)
-        if os.path.exists(patch_save_dir) and len(os.listdir(patch_save_dir)) > 0:
+        if (
+            os.path.exists(patch_save_dir)
+            and len(os.listdir(patch_save_dir)) > 0
+            and any(f.endswith("_normal.png") for f in os.listdir(patch_save_dir))
+            and any(f.endswith("_tumor.png") for f in os.listdir(patch_save_dir))
+        ):
             print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patches for {file} already extracted, skipping.")
             continue
         os.makedirs(patch_save_dir, exist_ok=True)
@@ -565,7 +589,6 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
             xml_path = os.path.join(annot_dir_test, xml_name)
         elif file.startswith("normal_") or file.startswith("tumor_"):
             xml_path = os.path.join(annot_dir_train, xml_name)
-        print(f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Processing file: {wsi_path} with XML: {xml_path}")
         try:
             slide = openslide.OpenSlide(wsi_path)
         except Exception as e:
@@ -639,13 +662,46 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
                     patch_save_dir_labeled = os.path.join(level_dir, prefix, label)
                     os.makedirs(patch_save_dir_labeled, exist_ok=True)
                     patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
-                    region.save(os.path.join(patch_save_dir_labeled, patch_name))
+                    # Only save the patch if it was not saved yet
+                    patch_path = os.path.join(patch_save_dir_labeled, patch_name)
+                    if not os.path.exists(patch_path):
+                        region.save(patch_path)
                     patch_count += 1
 
 
         print(
             f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patch extraction complete for {file} at level {level}. Total patches: {patch_count}"
         )
+
+def check_good_downloaded_files(level=3):
+    camelyon_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
+    to_redownload = []
+    for folder_type, folders in DOWNLOADED_FILES.items():
+        for remote_folder_path in folders:
+            folder_name = os.path.basename(remote_folder_path)
+            local_path = os.path.join(camelyon_dir, remote_folder_path)
+
+            if not os.path.exists(local_path):
+                print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Missing folder: {local_path}")
+                to_redownload.append(remote_folder_path)
+            else:
+                # For every file in the folder, check if it exists and is valid
+                for file_name in os.listdir(local_path):
+                    # Try to open image files to check for corruption
+                    if file_name.endswith(('.png')):
+                        try:
+                            with Image.open(local_path) as img:
+                                img.load()  # Force loading all image data
+                        except Exception as e:
+                            print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} File is corrupt or incomplete: {file_name} ({e})")
+                            to_redownload.append(remote_folder_path)
+                    else:
+                        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} File exists and is valid: {file_name}")
+    if to_redownload:
+        redownload_file = os.path.join(camelyon_dir, "redownload.txt")
+        with open(redownload_file, 'w') as f:
+            for folder in to_redownload:
+                f.write(folder + "\n")
 
 def count_number_tumor_patches(level=3):
     """ 
@@ -986,7 +1042,9 @@ def main():
     parser.add_argument("--patch_one_slide", type=str, default=None, help="Extract patches from a single slide directory (e.g. tumor_109)")
     parser.add_argument("--slide", type=str, default=None, help="Extract patches from a single slide directory (e.g. tumor_109) at a given level")
     parser.add_argument("--move_files", action="store_true", help="Move patches to a new directory structure based on slide names")
-
+    parser.add_argument("--train_strategy", action="store_true", help="Train ResNet classifier with a specific strategy")
+    parser.add_argument("--check_good_downloaded_files", action="store_true", help="Check if downloaded files are good (not corrupted)")
+    parser.add_argument("--strategy", type=str, default="self-supervised", choices=["balanced", "weighted_loss", "self_supervised"], help="Training strategy for ResNet classifier")
     # Check for unknown arguments
     known_args = {action.dest for action in parser._actions}
     input_args = {arg.lstrip('-').replace('-', '_') for arg in sys.argv[1:] if arg.startswith('-')}
@@ -998,6 +1056,10 @@ def main():
     args = parser.parse_args()
 
     # Download images
+    if args.check_good_downloaded_files:
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checking downloaded files for corruption...")
+        check_good_downloaded_files(level=int(args.patch_level) if args.patch_level.isdigit() else 3)
+        return
     if args.download:
         download_dataset(args.remote)
 
@@ -1034,6 +1096,15 @@ def main():
             print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patches must be extracted before training.")
             return
         train_resnet_classifier(args.patch_level)
+
+    if args.train_strategy:
+        if not images_downloaded():
+            print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Images must be downloaded before training.")
+            return
+        if not patches_extracted(patch_level=args.patch_level):
+            print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patches must be extracted before training.")
+            return
+        train_resnet_classifier_strategic(level=int(args.patch_level), strategy=args.strategy)
 
     if args.prepare:
         prepare_data()
