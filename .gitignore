@@ -8,6 +8,8 @@ __pycache__/
 carsi-multisc/
 env_carsi/
 *.so
+patch_paths*.txt
+*.npy
 data/
 *.png
 src/preprocessing/__pycache__/
