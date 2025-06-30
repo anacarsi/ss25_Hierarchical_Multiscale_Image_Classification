@@ -6,6 +6,7 @@ __pycache__/
 *.png
 # C extensions
 carsi-multisc/
+env_carsi/
 *.so
 data/
 *.png
