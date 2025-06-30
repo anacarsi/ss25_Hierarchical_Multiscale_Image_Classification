@@ -5,6 +5,7 @@ __pycache__/
 .pre-commit-config.yaml
 *.png
 # C extensions
+carsi-multisc/
 *.so
 data/
 *.png
