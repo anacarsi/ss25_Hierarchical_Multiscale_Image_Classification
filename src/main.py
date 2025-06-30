@@ -350,13 +350,11 @@ def extract_patches_per_slide(slide_path="tumor_109", patch_size=224, level=3, s
                 padded_region.paste(region, (0, 0))
                 region = padded_region
 
-            label = "unlabeled"
+            label = "normal"
             if mask:
                 mask_patch = mask.crop((x, y, x + patch_size, y + patch_size))
                 if np.any(np.array(mask_patch) > 0):
                     label = "tumor"
-                else:
-                    label = "normal"
 
             patch_array = np.array(region)
             if np.mean(patch_array) > 240:  # too white (empty tissue)
@@ -645,14 +643,12 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
                     padded_region.paste(region, (0, 0))
                     region = padded_region
 
-                label = "unlabeled"
+                label = "normal"
                 # Check if the patch overlaps with any positimve (tumor) region in the generated binary mask
                 if mask:
                     mask_patch = mask.crop((x, y, x + patch_size, y + patch_size))
                     if np.any(np.array(mask_patch) > 0):
                         label = "tumor"
-                    else:
-                        label = "normal"
 
                 patch_array = np.array(region)
                 if np.mean(patch_array) > 240:  # too white (empty tissue)
@@ -1044,7 +1040,7 @@ def main():
     parser.add_argument("--move_files", action="store_true", help="Move patches to a new directory structure based on slide names")
     parser.add_argument("--train_strategy", action="store_true", help="Train ResNet classifier with a specific strategy")
     parser.add_argument("--check_good_downloaded_files", action="store_true", help="Check if downloaded files are good (not corrupted)")
-    parser.add_argument("--strategy", type=str, default="self-supervised", choices=["balanced", "weighted_loss", "self_supervised"], help="Training strategy for ResNet classifier")
+    parser.add_argument("--strategy", type=str, default="self_supervised", choices=["balanced", "weighted_loss", "self_supervised"], help="Training strategy for ResNet classifier")
     # Check for unknown arguments
     known_args = {action.dest for action in parser._actions}
     input_args = {arg.lstrip('-').replace('-', '_') for arg in sys.argv[1:] if arg.startswith('-')}
