@@ -609,7 +609,7 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
         mask = None
         if os.path.exists(xml_path):
             try:
-                mask = parse_xml_mask(xml_path, (width, height), downsample)
+                mask = parse_xml_mask(xml_path, (width, height), slide)
                 if pad and (pad_w > 0 or pad_h > 0):
                     mask = ImageOps.expand(mask, (0, 0, pad_w, pad_h), fill=0)
             except Exception as e:
@@ -643,26 +643,29 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
                     padded_region.paste(region, (0, 0))
                     region = padded_region
 
-                label = "normal"
+                label = "unlabeled"  # Default label for normal patches
                 # Check if the patch overlaps with any positimve (tumor) region in the generated binary mask
                 if mask:
                     mask_patch = mask.crop((x, y, x + patch_size, y + patch_size))
                     if np.any(np.array(mask_patch) > 0):
                         label = "tumor"
+                    else:
+                        label = "normal"
+                    
+                else:
+                    print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} No mask available for {prefix}, treating as normal.")
+                    label = "normal"
 
                 patch_array = np.array(region)
                 if np.mean(patch_array) > 240:  # too white (empty tissue)
                     continue
 
-                if (only_tumor and label == "tumor") or not only_tumor:
-                    patch_save_dir_labeled = os.path.join(level_dir, prefix, label)
-                    os.makedirs(patch_save_dir_labeled, exist_ok=True)
-                    patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
-                    # Only save the patch if it was not saved yet
-                    patch_path = os.path.join(patch_save_dir_labeled, patch_name)
-                    if not os.path.exists(patch_path):
-                        region.save(patch_path)
-                    patch_count += 1
+                patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
+                # Only save the patch if it was not saved yet
+                patch_path = os.path.join(patch_save_dir, patch_name)
+                if not os.path.exists(patch_path):
+                    region.save(patch_path)
+                patch_count += 1
 
 
         print(
@@ -1019,6 +1022,7 @@ def validate_resnet_classifier(model_path="resnet18_patch_classifier.pth"):
     print(f"[INFO] Logistic Regression Accuracy: {acc:.4f}")
     print("[INFO] Confusion Matrix:")
     print(cm)
+
 
 def main():
     parser = argparse.ArgumentParser(description="Camelyon Dataset Processing")
