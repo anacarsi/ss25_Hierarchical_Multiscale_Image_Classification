@@ -2,9 +2,9 @@
 HiPAC — Hierarchical Patch-based Adaptive Classifier.
 Repository to detect cancer metastasis on lymph node. 
 <p align="center">
-  <img src="./images/tumor_002_mask_overlay.png" alt="Tumor 002 Overlay" width="400" height="400"/>
-  <img src="./images/tumor_076_mask_overlay.png" alt="Tumor 076 Overlay" width="400" height="400"/>
+  <img src="./images/visual_level6_overlay.png" alt="Tumor 002 Overlay" width="950" height="300"/>
 </p>
+
 ## Installation
 
 1. Clone the repository:
