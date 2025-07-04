@@ -61,9 +61,6 @@ python src/main.py [OPTIONS]
 - `-train`, `--train`  
   Train a ResNet18 classifier on extracted patches.
 
-- `-test`, `--test`  
-  Test the U-Net model (if implemented).
-
 - `--extract_features`  
   Extract feature vectors from patches using ResNet18.
 
@@ -84,7 +81,7 @@ python src/main.py --download
 python src/main.py --download --remote
 ```
 
-**Extract patches at a specific level:**
+**Extract patches at a level:**
 ```sh
 python src/main.py --patch --patch_level 1
 ```
