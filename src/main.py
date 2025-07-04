@@ -134,7 +134,7 @@ def download_dataset(remote=False):
     }
 
     # Apply limits for non-remote mode
-    limits = {"train_normal": 35, "train_tumor": 35, "test_images": 10}
+    limits = {"train_normal": 35, "train_tumor": 100, "test_images": 30}
 
     for file_type, target_dir in download_map.items():
         files_to_download = CAMELYON16_FILES[file_type]
