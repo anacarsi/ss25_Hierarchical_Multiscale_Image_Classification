@@ -59,7 +59,28 @@ python src/main.py [OPTIONS]
   Create a validation set (5 normal + 5 tumor images).
 
 - `-train`, `--train`  
-  Train a ResNet18 classifier on extracted patches.
+  Train a ResNet18 classifier on extracted patches (default, weighted loss for class imbalance).
+
+- `--train_strategy`  
+  Train a ResNet18 classifier with a specific strategy. Use with `--strategy`.
+
+- `--strategy STRATEGY`  
+  Training strategy for ResNet classifier. Options:
+    - `self_supervised`: Use SimCLR pretraining for feature extraction.
+    - `balanced`: Balance the number of tumor and normal patches in the training set.
+    - `weighted_loss`: Use weighted loss for class imbalance (default for `--train`).
+  Example:
+    ```sh
+    python src/main.py --train_strategy --strategy balanced
+    python src/main.py --train_strategy --strategy self_supervised
+    python src/main.py --train_strategy --strategy weighted_loss
+    ```
+
+  If you encounter CUDA errors or want to debug GPU operations, you can run with:
+    ```sh
+    CUDA_LAUNCH_BLOCKING=1 python src/main.py --train_strategy --strategy self_supervised
+    ```
+  This will force synchronous CUDA execution and provide more informative error messages.
 
 - `--extract_features`  
   Extract feature vectors from patches using ResNet18.

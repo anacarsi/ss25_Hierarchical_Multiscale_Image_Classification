@@ -14,7 +14,7 @@ from tqdm import tqdm
 class SimCLRModel(nn.Module):
     def __init__(self, base_model="resnet18", out_dim=128):
         super().__init__()
-        self.encoder = getattr(models, base_model)(pretrained=False)
+        self.encoder = getattr(models, base_model)(weights=None)
         dim_mlp = self.encoder.fc.in_features
         self.encoder.fc = nn.Identity()
         self.projector = nn.Sequential(
@@ -29,22 +29,30 @@ class SimCLRModel(nn.Module):
         return projections # we're only using the feature extractor part
 
 def nt_xent_loss(z_i, z_j, temperature=0.5):
-    """ 
-    Computes the contrastive loss for two sets of embeddings.
-    Parameters:
-        z_i (torch.Tensor): Embeddings from the first view, shape (B, D).
-        z_j (torch.Tensor): Embeddings from the second view, shape (B, D).
-        temperature (float): Temperature parameter for scaling the similarity.
     """
-    z = torch.cat([z_i, z_j], dim=0)
+    NT-Xent loss implementation without invalid labels for cross_entropy.
+    """
+    device = z_i.device
+    N = z_i.size(0)
+    z = torch.cat([z_i, z_j], dim=0)  # (2N, D)
     z = F.normalize(z, dim=1)
-    sim = torch.matmul(z, z.T) / temperature
-    N = z.shape[0]
-    labels = torch.arange(N).to(z.device)
-    labels = (labels + N // 2) % N
-    mask = ~torch.eye(N, dtype=bool).to(z.device)
-    sim = sim.masked_select(mask).view(N, -1)
-    return F.cross_entropy(sim, labels)
+
+    sim_matrix = torch.matmul(z, z.T)  # (2N, 2N)
+    sim_matrix = sim_matrix / temperature
+
+    # Mask out self-similarity
+    mask = torch.eye(2 * N, dtype=torch.bool).to(device)
+    sim_matrix = sim_matrix.masked_fill(mask, float('-inf'))
+
+    # Positive similarities (i paired with i+N and vice versa)
+    positives = torch.cat([torch.diag(sim_matrix, N), torch.diag(sim_matrix, -N)]).unsqueeze(1)  # (2N, 1)
+
+    # Denominator: logsumexp over all other similarities
+    denominator = torch.logsumexp(sim_matrix, dim=1, keepdim=True)  # (2N, 1)
+
+    loss = -positives + denominator
+    return loss.mean()
+
 
 def get_simclr_transform():
     return T.Compose([
