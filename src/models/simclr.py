@@ -65,14 +65,17 @@ def get_simclr_transform():
                     std=[0.229, 0.224, 0.225])
     ])
 
-def pretrain_simclr(patch_dir, epochs=10, batch_size=128, lr=1e-3):
+def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3):
     base_transform = get_simclr_transform()
     base_dataset = PatchDataset(patch_dir, transform=None)
     simclr_dataset = SimCLRDataset(base_dataset, transform=base_transform)
-    dataloader = DataLoader(simclr_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
+    dataloader = DataLoader(simclr_dataset, batch_size=batch_size, shuffle=True, num_workers=8)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
     model = SimCLRModel().to(device)
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     for epoch in range(epochs):
@@ -88,6 +91,12 @@ def pretrain_simclr(patch_dir, epochs=10, batch_size=128, lr=1e-3):
             optimizer.step()
             total_loss += loss.item()
         print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataloader):.4f}")
+
+        # Save checkpoint every 50 epochs
+        if (epoch + 1) % 50 == 0:
+            checkpoint_path = f"simclr_encoder_epoch{epoch+1}.pth"
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"[INFO] SimCLR checkpoint saved: {checkpoint_path}")
 
     torch.save(model.state_dict(), "simclr_encoder.pth")
     print("[INFO] SimCLR pretraining complete.")

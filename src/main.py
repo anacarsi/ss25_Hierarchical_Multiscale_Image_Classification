@@ -491,7 +491,8 @@ def train_resnet_classifier(level=3):
 
     optimizer = Adam(model.parameters(), lr=1e-4)
 
-    num_epochs = 5
+    num_epochs = 30
+
     for epoch in range(num_epochs):
         model.train()
         total_loss, correct = 0, 0
@@ -523,6 +524,12 @@ def train_resnet_classifier(level=3):
 
         print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
 
+        # Save checkpoint every 50 epochs
+        if (epoch + 1) % 10 == 0:
+            checkpoint_path = f"src/models/resnet18_patch_classifier_epoch{epoch+1}.pth"
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checkpoint saved: {checkpoint_path}")
+
     torch.save(model.state_dict(), "src/models/resnet18_patch_classifier.pth")
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Model saved resnet18_patch_classifier.pth.")
 
@@ -547,7 +554,7 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
     # Load model + loss based on strategy
     if strategy == "self_supervised":
         if not os.path.exists("simclr_encoder.pth"):
-            pretrain_simclr(patch_dir, epochs=10)
+            pretrain_simclr(patch_dir, epochs=200)
         model = ResNet18Classifier(pretrained_weights_path="simclr_encoder.pth").to(device)
         criterion = nn.CrossEntropyLoss(weight=weights)
 
