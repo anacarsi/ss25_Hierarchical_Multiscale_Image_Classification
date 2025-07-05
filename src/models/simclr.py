@@ -78,6 +78,10 @@ def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3):
         model = nn.DataParallel(model)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
+    best_loss = float('inf')
+    epochs_no_improve = 0
+    early_stop_patience = 20
+    best_epoch = -1
     for epoch in range(epochs):
         total_loss = 0
         model.train()
@@ -90,7 +94,24 @@ def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3):
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        print(f"Epoch {epoch+1}, Loss: {total_loss / len(dataloader):.4f}")
+        avg_loss = total_loss / len(dataloader)
+        print(f"Epoch {epoch+1}, Loss: {avg_loss:.4f}")
+
+        # Early stopping 
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+            epochs_no_improve = 0
+            best_epoch = epoch + 1
+            # Optionally save best model so far
+            torch.save(model.state_dict(), "simclr_encoder_best.pth")
+        else:
+            epochs_no_improve += 1
+
+        if (epoch + 1) % 20 == 0:
+            print(f"[INFO] Early stopping check: {epochs_no_improve} epochs without improvement (patience={early_stop_patience})")
+            if epochs_no_improve >= early_stop_patience:
+                print(f"[INFO] Early stopping triggered at epoch {epoch+1}. Best epoch: {best_epoch} with loss {best_loss:.4f}")
+                break
 
         # Save checkpoint every 50 epochs
         if (epoch + 1) % 50 == 0:
