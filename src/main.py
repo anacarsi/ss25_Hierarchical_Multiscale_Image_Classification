@@ -43,6 +43,7 @@ class bcolors:
     BOLD = '\033[1m'
     UNDERLINE = '\033[4m'
 
+BATCH_SIZE = 512 # 4 GPUS - 128 per GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Balance the dataset by limiting the number of patches per class. At level, max 7483 tumor patches and 7000 normal patches.
@@ -408,7 +409,7 @@ def parse_xml_mask(xml_path, level_dims, slide):
             draw.polygon(coords, outline=255, fill=255)
     return mask
 
-def get_dataloaders(patch_dir, test_ratio=0.2, batch_size=32, balanced=False):
+def get_dataloaders(patch_dir, test_ratio=0.2, batch_size=BATCH_SIZE, balanced=False):
     slide_dirs = [d for d in os.listdir(patch_dir) if os.path.isdir(os.path.join(patch_dir, d))]
     train_slides, val_slides = train_test_split(slide_dirs, test_size=test_ratio, random_state=42)
 
@@ -463,8 +464,8 @@ def get_dataloaders(patch_dir, test_ratio=0.2, batch_size=32, balanced=False):
     else:
         print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Could not balance validation set: tumor patches = {n_tumor}, normal patches = {n_normal}.")
 
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
 
     return train_loader, val_loader, train_dataset, val_dataset
 
@@ -473,10 +474,12 @@ def train_resnet_classifier(level=3):
     patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
 
     train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(
-        patch_dir, test_ratio=0.2, batch_size=32
+        patch_dir, test_ratio=0.2, batch_size=BATCH_SIZE
     )
 
     model = ResNet18Classifier().to(device)
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
 
     # Weighted loss for class imbalance
     all_labels = np.array(train_dataset.labels)
@@ -492,13 +495,16 @@ def train_resnet_classifier(level=3):
     for epoch in range(num_epochs):
         model.train()
         total_loss, correct = 0, 0
+        scaler = torch.cuda.amp.GradScaler()
         for imgs, labels, _ in train_loader:
             imgs, labels = imgs.to(device), labels.to(device)
             optimizer.zero_grad()
-            outputs = model(imgs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+            with torch.cuda.amp.autocast():
+                outputs = model(imgs)
+                loss = criterion(outputs, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             total_loss += loss.item()
             preds = outputs.argmax(dim=1)
             correct += (preds == labels).sum().item()
@@ -529,7 +535,7 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
     # Always use full dataset if using weighted loss or self-supervised
     balanced_flag = (strategy == "balanced")
     train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(
-        patch_dir, test_ratio=0.2, batch_size=32, balanced=balanced_flag
+        patch_dir, test_ratio=0.2, batch_size=BATCH_SIZE, balanced=balanced_flag
     )
 
     # Compute class weights (shared logic)
@@ -547,10 +553,14 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
 
     elif strategy == "balanced":
         model = ResNet18Classifier().to(device)
+        if torch.cuda.device_count() > 1:
+            model = nn.DataParallel(model)
         criterion = nn.CrossEntropyLoss()
 
     elif strategy == "weighted_loss":
         model = ResNet18Classifier().to(device)
+        if torch.cuda.device_count() > 1:
+            model = nn.DataParallel(model)
         criterion = nn.CrossEntropyLoss(weight=weights)
 
     optimizer = Adam(model.parameters(), lr=1e-4)
@@ -558,13 +568,16 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
     for epoch in range(5):
         model.train()
         total_loss, correct = 0, 0
+        scaler = torch.cuda.amp.GradScaler()
         for imgs, labels, _ in train_loader:
             imgs, labels = imgs.to(device), labels.to(device)
             optimizer.zero_grad()
-            outputs = model(imgs)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
+            with torch.cuda.amp.autocast():
+                outputs = model(imgs)
+                loss = criterion(outputs, labels)
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             total_loss += loss.item()
             correct += (outputs.argmax(1) == labels).sum().item()
 
@@ -806,8 +819,7 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
         return
 
     dataset = PatchDataset(patch_dir, transform=transform)
-    # Use higher batch size and num_workers for feature extraction as it's typically I/O bound
-    loader = torch.utils.data.DataLoader(dataset, batch_size=128, shuffle=False, num_workers=2) 
+    loader = torch.utils.data.DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8) 
     
     print(
         f"{bcolors.INFO}[INFO]{bcolors.ENDC} Extracting features from patches at level {level} with patch directory: {patch_dir}, which exists: {os.path.exists(patch_dir)}"
@@ -819,6 +831,8 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ResNet18FeatureExtractor().to(device)
     full_classifier_model = ResNet18Classifier().to(device)
+    if torch.cuda.device_count() > 1:
+        full_classifier_model = nn.DataParallel(full_classifier_model)
     if os.path.exists(model_path):
         print(f"[INFO] Loading trained classifier weights from {model_path}")
         full_classifier_model.load_state_dict(torch.load(model_path, map_location=device))
@@ -886,7 +900,7 @@ def extract_features_with_simclr(level=3, simclr_encoder_path="simclr_encoder.pt
         return
 
     dataset = PatchDataset(patch_dir, transform=transform)
-    loader = DataLoader(dataset, batch_size=128, shuffle=False, num_workers=2)
+    loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = UnifiedResNet(pretrained_weights_path=simclr_encoder_path, classifier=False).to(device)
@@ -969,11 +983,13 @@ def evaluate_resnet_classifier(patch_level=3):
     ])
 
     _, val_loader, _, val_dataset = get_dataloaders(
-        patch_dir, transform, test_ratio=0.2, batch_size=64
+        patch_dir, transform, test_ratio=0.2, batch_size=BATCH_SIZE
     )
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = ResNet18Classifier().to(device)
+    if torch.cuda.device_count() > 1:
+        model = nn.DataParallel(model)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
 
