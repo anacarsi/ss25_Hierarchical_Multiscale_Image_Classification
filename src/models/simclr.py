@@ -71,6 +71,8 @@ def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3):
     simclr_dataset = SimCLRDataset(base_dataset, transform=base_transform)
     dataloader = DataLoader(simclr_dataset, batch_size=batch_size, shuffle=True, num_workers=8)
 
+    print(f"SimCLR dataset length: {len(simclr_dataset)}")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     model = SimCLRModel().to(device)
@@ -86,6 +88,12 @@ def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3):
         total_loss = 0
         model.train()
         for x_i, x_j in tqdm(dataloader, desc=f"SimCLR Epoch {epoch+1}"):
+            # Debug inside training loop
+            if epoch == 0:
+                print("Batch x_i shape:", x_i.shape)
+                print("First image tensor stats:", x_i[0].mean().item(), x_i[0].std().item())
+                print("First pair sim:", F.cosine_similarity(z_i[0].unsqueeze(0), z_j[0].unsqueeze(0)))
+
             x_i, x_j = x_i.to(device), x_j.to(device)
             z_i = model(x_i)
             z_j = model(x_j)
