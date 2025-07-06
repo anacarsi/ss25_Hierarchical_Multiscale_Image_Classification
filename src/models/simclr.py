@@ -27,31 +27,37 @@ class SimCLRModel(nn.Module):
         features = self.encoder(x)
         projections = self.projector(features)
         return projections # we're only using the feature extractor part
-
+    
 def nt_xent_loss(z_i, z_j, temperature=0.5):
-    """
-    NT-Xent loss implementation without invalid labels for cross_entropy.
-    """
     device = z_i.device
     N = z_i.size(0)
     z = torch.cat([z_i, z_j], dim=0)  # (2N, D)
     z = F.normalize(z, dim=1)
 
-    sim_matrix = torch.matmul(z, z.T)  # (2N, 2N)
-    sim_matrix = sim_matrix / temperature
+    sim_matrix = torch.matmul(z, z.T) / temperature  # (2N, 2N)
 
-    # Mask out self-similarity
     mask = torch.eye(2 * N, dtype=torch.bool).to(device)
-    sim_matrix = sim_matrix.masked_fill(mask, float('-inf'))
+    sim_matrix = sim_matrix.masked_fill(mask, -1e9)  # Use large neg instead of -inf
 
-    # Positive similarities (i paired with i+N and vice versa)
-    positives = torch.cat([torch.diag(sim_matrix, N), torch.diag(sim_matrix, -N)]).unsqueeze(1)  # (2N, 1)
+    positives = torch.cat([
+        torch.diag(sim_matrix, N),
+        torch.diag(sim_matrix, -N)
+    ]).unsqueeze(1)  # (2N, 1)
 
-    # Denominator: logsumexp over all other similarities
     denominator = torch.logsumexp(sim_matrix, dim=1, keepdim=True)  # (2N, 1)
 
+    if torch.isnan(denominator).any():
+        print("[ERROR] NaN in denominator!")
+    if torch.isnan(positives).any():
+        print("[ERROR] NaN in positives!")
+
     loss = -positives + denominator
-    return loss.mean()
+    mean_loss = loss.mean()
+
+    if torch.isnan(mean_loss):
+        print("[ERROR] Final loss is NaN!")
+
+    return mean_loss
 
 
 def get_simclr_transform():
@@ -66,18 +72,22 @@ def get_simclr_transform():
     ])
 
 def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3):
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+
     base_transform = get_simclr_transform()
     base_dataset = PatchDataset(patch_dir, transform=None)
     simclr_dataset = SimCLRDataset(base_dataset, transform=base_transform)
     dataloader = DataLoader(simclr_dataset, batch_size=batch_size, shuffle=True, num_workers=8)
+
 
     print(f"SimCLR dataset length: {len(simclr_dataset)}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
     model = SimCLRModel().to(device)
-    if torch.cuda.device_count() > 1:
-        model = nn.DataParallel(model)
+    # if torch.cuda.device_count() > 1:
+        # model = nn.DataParallel(model)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
 
     best_loss = float('inf')
@@ -87,21 +97,24 @@ def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3):
     for epoch in range(epochs):
         total_loss = 0
         model.train()
-        for x_i, x_j in tqdm(dataloader, desc=f"SimCLR Epoch {epoch+1}"):
-            # Debug inside training loop
-            if epoch == 0:
-                print("Batch x_i shape:", x_i.shape)
-                print("First image tensor stats:", x_i[0].mean().item(), x_i[0].std().item())
-                print("First pair sim:", F.cosine_similarity(z_i[0].unsqueeze(0), z_j[0].unsqueeze(0)))
-
+        for step, (x_i, x_j) in enumerate(tqdm(dataloader, desc=f"SimCLR Epoch {epoch+1}")):
             x_i, x_j = x_i.to(device), x_j.to(device)
             z_i = model(x_i)
             z_j = model(x_j)
             loss = nt_xent_loss(z_i, z_j)
             optimizer.zero_grad()
-            loss.backward()
+            if torch.isnan(loss):
+                print("[ERROR] Loss is NaN!")
+            try:
+                with torch.autograd.set_detect_anomaly(True):
+                    loss.backward()
+            except RuntimeError as e:
+                print(f"[ERROR] Backward pass failed: {e}")
+                continue
             optimizer.step()
             total_loss += loss.item()
+            
+
         avg_loss = total_loss / len(dataloader)
         print(f"Epoch {epoch+1}, Loss: {avg_loss:.4f}")
 
