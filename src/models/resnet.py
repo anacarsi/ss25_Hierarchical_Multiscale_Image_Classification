@@ -9,15 +9,16 @@ import os
 
 
 class bcolors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    DEBUG = '\033[96m'
-    INFO = '\033[95m'      # pink
-    WARNING = '\033[93m'   # yellow
-    ERROR = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
+    HEADER = "\033[95m"
+    OKBLUE = "\033[94m"
+    DEBUG = "\033[96m"
+    INFO = "\033[95m"  # pink
+    WARNING = "\033[93m"  # yellow
+    ERROR = "\033[91m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+    UNDERLINE = "\033[4m"
+
 
 class ResNet18FeatureExtractor(nn.Module):
     def __init__(self, weight_path="resnet18_patch_classifier.pth"):
@@ -37,7 +38,8 @@ class ResNet18FeatureExtractor(nn.Module):
 
     def forward(self, x):
         x = self.features(x)
-        return x.view(x.size(0), -1) # we're only using the feature extractor part
+        return x.view(x.size(0), -1)  # we're only using the feature extractor part
+
 
 class UnifiedResNet(nn.Module):
     def __init__(self, pretrained_weights_path=None, classifier=False):
@@ -45,7 +47,7 @@ class UnifiedResNet(nn.Module):
         self.model = models.resnet18(pretrained=False)
         self.model.fc = nn.Identity()
         if pretrained_weights_path and os.path.exists(pretrained_weights_path):
-            state_dict = torch.load(pretrained_weights_path, map_location='cpu')
+            state_dict = torch.load(pretrained_weights_path, map_location="cpu")
             state_dict = {k: v for k, v in state_dict.items() if "fc" not in k}
             self.model.load_state_dict(state_dict, strict=False)
         if classifier:
@@ -53,16 +55,16 @@ class UnifiedResNet(nn.Module):
 
     def forward(self, x):
         return self.model(x)
-    
+
+
 class ResNet18Classifier(nn.Module):
     """
     ResNet18 model for binary classification of patches.
     """
+
     def __init__(self):
         super().__init__()
-        self.model = models.resnet18(
-            pretrained=True
-        ) 
+        self.model = models.resnet18(pretrained=True)
         num_ftrs = self.model.fc.in_features
         self.model.fc = nn.Linear(num_ftrs, 2)  # binary classification
 
@@ -76,17 +78,34 @@ class ResNet18Classifier(nn.Module):
         """
         return self.model(x)
 
+
 # ------------------- ResNet18 Classifier w Pretrained SIMCLR -------------------
 class ResNet18ClassifierSIMCLR(nn.Module):
     def __init__(self, pretrained_weights_path=None, num_classes=2):
         super().__init__()
         self.encoder = models.resnet18(pretrained=False)
+
+        # Replace classification head to match SimCLR encoder
+        self.encoder.fc = nn.Identity()
+
         if pretrained_weights_path:
-            state_dict = torch.load(pretrained_weights_path, map_location='cpu')
-            self.encoder.fc = nn.Identity()  # match SimCLR
-            self.encoder.load_state_dict(state_dict, strict=False)  # load SimCLR encoder
-        self.encoder.fc = nn.Linear(self.encoder.fc.in_features, num_classes)
+            state_dict = torch.load(pretrained_weights_path, map_location="cpu")
+            # Remove final classification head if present
+            state_dict = {k: v for k, v in state_dict.items() if "fc" not in k}
+            missing_keys, unexpected_keys = self.encoder.load_state_dict(
+                state_dict, strict=False
+            )
+            if missing_keys:
+                print(
+                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Missing keys during loading: {missing_keys}"
+                )
+            if unexpected_keys:
+                print(
+                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Unexpected keys: {unexpected_keys}"
+                )
+
+        # Now define new classification head (e.g., binary)
+        self.encoder.fc = nn.Linear(512, num_classes)
 
     def forward(self, x):
         return self.encoder(x)
-
