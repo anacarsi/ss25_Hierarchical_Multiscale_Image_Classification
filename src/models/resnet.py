@@ -21,7 +21,7 @@ class bcolors:
 
 
 class ResNet18FeatureExtractor(nn.Module):
-    def __init__(self, weight_path="resnet18_patch_classifier.pth"):
+    def __init__(self, weight_path="resnet18_patch_classifier__level3.pth"):
         super().__init__()
         resnet = models.resnet18(weights=None)  # Start with uninitialized weights
         weight_path = os.path.join(os.getcwd(), "src", "models", weight_path)

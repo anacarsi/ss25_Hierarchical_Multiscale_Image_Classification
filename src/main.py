@@ -3,6 +3,7 @@ import sys
 import argparse
 import requests
 from tqdm import tqdm
+import copy
 import torch
 import torch.nn as nn
 from torch.optim import Adam
@@ -26,8 +27,10 @@ os.add_dll_directory(
 """
 import openslide
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from models.resnet import ResNet18Classifier, ResNet18FeatureExtractor, UnifiedResNet
+from models.resnet import ResNet18Classifier, ResNet18FeatureExtractor, UnifiedResNet, ResNet18ClassifierSIMCLR
 from datasets.patch_dataset import PatchDataset
+from datasets.mildataset import WSIMILDDataset
+from models.mil_classifier import MILClassifier
 from utils.evaluation_FROC import computeEvaluationMask, computeITCList, readCSVContent, compute_FP_TP_Probs, computeFROC, plotFROC
 from models.simclr import pretrain_simclr, get_simclr_transform
 import zipfile
@@ -526,12 +529,12 @@ def train_resnet_classifier(level=3):
 
         # Save checkpoint every 50 epochs
         if (epoch + 1) % 10 == 0:
-            checkpoint_path = f"src/models/resnet18_patch_classifier_epoch{epoch+1}.pth"
+            checkpoint_path = f"src/models/resnet18_patch_classifier_epoch{epoch+1}_level{level}.pth"
             torch.save(model.state_dict(), checkpoint_path)
             print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checkpoint saved: {checkpoint_path}")
 
-    torch.save(model.state_dict(), "src/models/resnet18_patch_classifier.pth")
-    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Model saved resnet18_patch_classifier.pth.")
+    torch.save(model.state_dict(), "src/models/resnet18_patch_classifier_level{level}.pth")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Model saved resnet18_patch_classifier_level{level}.pth.")
 
 def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
     assert strategy in {"balanced", "weighted_loss", "self_supervised"}, "Invalid strategy option"
@@ -553,9 +556,9 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
 
     # Load model + loss based on strategy
     if strategy == "self_supervised":
-        if not os.path.exists("simclr_encoder.pth"):
-            pretrain_simclr(patch_dir, epochs=200)
-        model = ResNet18Classifier(pretrained_weights_path="simclr_encoder.pth").to(device)
+        if not os.path.exists("simclr_encoder_level{level}.pth"):
+            pretrain_simclr(patch_dir, epochs=200, level=level)
+        model = ResNet18ClassifierSIMCLR(pretrained_weights_path="simclr_encoder_level{level}.pth").to(device)
         criterion = nn.CrossEntropyLoss(weight=weights)
 
     elif strategy == "balanced":
@@ -602,9 +605,93 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
         val_acc = val_correct / len(val_dataset)
         print(f"Epoch {epoch+1}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
 
-    torch.save(model.state_dict(), f"src/models/resnet18_patch_classifier_{strategy}.pth")
+    torch.save(model.state_dict(), f"src/models/resnet18_patch_classifier_{strategy}_level{level}.pth")
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete.")
 
+
+def train_mil_classifier(feature_level=3, pooling='attention', epochs=100, lr=1e-4, patience=10):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Load dataset
+    dataset = WSIMILDDataset(
+        features_path=f"patch_features_{feature_level}.npy",
+        labels_path=f"patch_labels_{feature_level}.npy",
+        paths_path=f"patch_paths_{feature_level}.txt"
+    )
+
+    # Train/val split
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(dataset, [train_size, val_size])
+
+    train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
+
+    # Model, optimizer, loss
+    model = MILClassifier(feature_dim=512, pooling=pooling).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    criterion = nn.CrossEntropyLoss()
+
+    best_auc = 0.0
+    best_model_wts = copy.deepcopy(model.state_dict())
+    early_stop_counter = 0
+
+    for epoch in range(epochs):
+        # ----------- Train -----------
+        model.train()
+        train_loss = 0.0
+        train_preds, train_labels = [], []
+        for bags, labels in train_loader:
+            bags, labels = bags[0].to(device), labels.to(device)
+            logits, _ = model(bags)
+            loss = criterion(logits.unsqueeze(0), labels)
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+
+            train_loss += loss.item()
+            train_preds.append(logits.softmax(dim=-1)[1].item())  # positive class score
+            train_labels.append(labels.item())
+
+        train_auc = roc_auc_score(train_labels, train_preds)
+        train_loss /= len(train_loader)
+
+        # ----------- Validation -----------
+        model.eval()
+        val_loss = 0.0
+        val_preds, val_labels = [], []
+        with torch.no_grad():
+            for bags, labels in val_loader:
+                bags, labels = bags[0].to(device), labels.to(device)
+                logits, _ = model(bags)
+                loss = criterion(logits.unsqueeze(0), labels)
+
+                val_loss += loss.item()
+                val_preds.append(logits.softmax(dim=-1)[1].item())
+                val_labels.append(labels.item())
+
+        val_auc = roc_auc_score(val_labels, val_preds)
+        val_loss /= len(val_loader)
+
+        print(f"[Epoch {epoch+1:03d}] Train Loss: {train_loss:.4f}, Train AUC: {train_auc:.4f}, "
+              f"Val Loss: {val_loss:.4f}, Val AUC: {val_auc:.4f}")
+
+        # ----------- Early Stopping Logic -----------
+        if val_auc > best_auc:
+            best_auc = val_auc
+            best_model_wts = copy.deepcopy(model.state_dict())
+            early_stop_counter = 0
+        else:
+            early_stop_counter += 1
+            if early_stop_counter >= patience:
+                print(f"[Early Stopping] No improvement for {patience} epochs. Stopping at epoch {epoch+1}.")
+                break
+
+    # Save best model
+    model.load_state_dict(best_model_wts)
+    torch.save(model.state_dict(), f"mil_classifier_{pooling}_best__level{feature_level}.pth")
+    print(f"[INFO] Training complete. Best Val AUC: {best_auc:.4f}")
 
 def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=False, test=False):
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Extracting patches at level {level}...")
@@ -730,6 +817,7 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=F
         print(
             f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patch extraction complete for {file} at level {level}. Total patches: {patch_count}"
         )
+
 def check_good_downloaded_files(level=3):
     camelyon_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
     to_redownload = []
@@ -802,7 +890,7 @@ def count_number_tumor_patches(level=3):
     if slides_with_tumor_in_normal:
         print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} The following normal slides contain tumor patches: {', '.join(slides_with_tumor_in_normal)}")
 
-def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
+def extract_features(level=3, model_path="resnet18_patch_classifier_level3.pth"):
     """
     Extract features from the patches using a ResNet18 model.
     Parameters:
@@ -894,7 +982,7 @@ def extract_features(level=3, model_path="resnet18_patch_classifier.pth"):
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Features saved to {features_save_path}, labels to {labels_save_path}, paths to {paths_save_path}")
 
 # Feature extraction function
-def extract_features_with_simclr(level=3, simclr_encoder_path="simclr_encoder.pth"):
+def extract_features_with_simclr(level=3, simclr_encoder_path="simclr_encoder_level{level}.pth"):
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -975,7 +1063,7 @@ def evaluate_resnet_classifier(patch_level=3):
     """ 
     Evaluate the ResNet18 classifier on validation patches.
     """
-    model_path = os.path.join(os.getcwd(), "src", "models", "resnet18_patch_classifier.pth")
+    model_path = os.path.join(os.getcwd(), "src", "models", "resnet18_patch_classifier_level{level}.pth")
     if not os.path.exists(model_path):
         print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Model file '{model_path}' does not exist. Please train the model first.")
         return
@@ -1014,7 +1102,7 @@ def evaluate_resnet_classifier(patch_level=3):
     acc = correct / total
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Classifier accuracy on validation patches: {acc:.4f}")
 
-def validate_resnet_classifier(model_path="resnet18_patch_classifier.pth"):
+def validate_resnet_classifier(model_path="resnet18_patch_classifier_level{level}.pth"):
     """
     Sanity check for extracted patch features — no plotting, CLI only.
     """
@@ -1091,6 +1179,7 @@ def main():
     parser.add_argument("--train_strategy", action="store_true", help="Train ResNet classifier with a specific strategy")
     parser.add_argument("--check_good_downloaded_files", action="store_true", help="Check if downloaded files are good (not corrupted)")
     parser.add_argument("--strategy", type=str, default="self_supervised", choices=["balanced", "weighted_loss", "self_supervised"], help="Training strategy for ResNet classifier")
+    parser.add_argument("--train_mil", action="store_true", help="Train MIL classifier with specified pooling method")
     # Check for unknown arguments
     known_args = {action.dest for action in parser._actions}
     input_args = {arg.lstrip('-').replace('-', '_') for arg in sys.argv[1:] if arg.startswith('-')}
@@ -1151,6 +1240,12 @@ def main():
             print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patches must be extracted before training.")
             return
         train_resnet_classifier_strategic(level=int(args.patch_level), strategy=args.strategy)
+    
+    if args.train_mil:
+        if not features_extracted(patch_level=args.patch_level):
+            print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Features must be extracted before training MIL classifier.")
+            return
+        train_mil_classifier(feature_level=int(args.patch_level), pooling='attention')
 
     if args.prepare:
         prepare_data()

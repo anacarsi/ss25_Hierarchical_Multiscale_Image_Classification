@@ -73,8 +73,7 @@ def get_simclr_transform():
         ]
     )
 
-
-def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3):
+def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3, level=3):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
@@ -129,7 +128,7 @@ def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3):
             epochs_no_improve = 0
             best_epoch = epoch + 1
             # Optionally save best model so far
-            torch.save(model.state_dict(), "simclr_encoder_best.pth")
+            torch.save(model.state_dict(), "simclr_encoder_best_level{level}.pth")
         else:
             epochs_no_improve += 1
 
@@ -145,9 +144,9 @@ def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3):
 
         # Save checkpoint every 50 epochs
         if (epoch + 1) % 50 == 0:
-            checkpoint_path = f"simclr_encoder_epoch{epoch+1}.pth"
+            checkpoint_path = f"simclr_encoder_epoch{epoch+1}_level{level}.pth"
             torch.save(model.state_dict(), checkpoint_path)
             print(f"[INFO] SimCLR checkpoint saved: {checkpoint_path}")
 
-    torch.save(model.state_dict(), "simclr_encoder.pth")
+    torch.save(model.state_dict(), "simclr_encoder_level{level}.pth")
     print("[INFO] SimCLR pretraining complete.")
