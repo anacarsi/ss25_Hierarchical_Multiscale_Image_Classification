@@ -84,28 +84,30 @@ class ResNet18ClassifierSIMCLR(nn.Module):
     def __init__(self, pretrained_weights_path=None, num_classes=2):
         super().__init__()
         self.encoder = models.resnet18(pretrained=False)
+        self.encoder.fc = nn.Identity()  # SimCLR doesn't have a classifier head
 
-        # Replace classification head to match SimCLR encoder
-        self.encoder.fc = nn.Identity()
-
-        if pretrained_weights_path:
+        if pretrained_weights_path and os.path.exists(pretrained_weights_path):
             state_dict = torch.load(pretrained_weights_path, map_location="cpu")
-            # Remove final classification head if present
-            state_dict = {k: v for k, v in state_dict.items() if "fc" not in k}
-            missing_keys, unexpected_keys = self.encoder.load_state_dict(
-                state_dict, strict=False
-            )
-            if missing_keys:
-                print(
-                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Missing keys during loading: {missing_keys}"
-                )
-            if unexpected_keys:
-                print(
-                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Unexpected keys: {unexpected_keys}"
-                )
 
-        # Now define new classification head (e.g., binary)
+            # If checkpoint is a dict with "encoder", get that part
+            if "encoder" in state_dict:
+                state_dict = state_dict["encoder"]
+
+            # Strip 'encoder.' prefix if present
+            new_state_dict = {}
+            for k, v in state_dict.items():
+                if k.startswith("encoder."):
+                    new_k = k.replace("encoder.", "")
+                else:
+                    new_k = k
+                new_state_dict[new_k] = v
+
+            missing, unexpected = self.encoder.load_state_dict(new_state_dict, strict=False)
+            print(f"[INFO] Loaded weights with {len(missing)} missing and {len(unexpected)} unexpected keys.")
+
+        # Final classification head
         self.encoder.fc = nn.Linear(512, num_classes)
 
     def forward(self, x):
         return self.encoder(x)
+

@@ -3,6 +3,7 @@ import sys
 import argparse
 import requests
 from tqdm import tqdm
+from sklearn.metrics import roc_auc_score
 import copy
 import torch
 import torch.nn as nn
@@ -541,7 +542,7 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
 
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training ResNet18 classifier using strategy: {strategy}...")
     patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
-
+    model_dir = os.path.join(os.getcwd(), "src", "models", f"simclr_encoder_level{level}.pth")
     # Always use full dataset if using weighted loss or self-supervised
     balanced_flag = (strategy == "balanced")
     train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(
@@ -556,9 +557,11 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
 
     # Load model + loss based on strategy
     if strategy == "self_supervised":
-        if not os.path.exists("simclr_encoder_level{level}.pth"):
+        if not os.path.exists(model_dir):
+            print(f"Not found  {model_dir}. Pretraining SimCLR encoder...")
             pretrain_simclr(patch_dir, epochs=200, level=level)
-        model = ResNet18ClassifierSIMCLR(pretrained_weights_path="simclr_encoder_level{level}.pth").to(device)
+        model_path = os.path.join(os.getcwd(), "src", "models", f"simclr_encoder_level{level}.pth")
+        model = ResNet18ClassifierSIMCLR(pretrained_weights_path=model_path).to(device)
         criterion = nn.CrossEntropyLoss(weight=weights)
 
     elif strategy == "balanced":
@@ -690,7 +693,7 @@ def train_mil_classifier(feature_level=3, pooling='attention', epochs=100, lr=1e
 
     # Save best model
     model.load_state_dict(best_model_wts)
-    torch.save(model.state_dict(), f"mil_classifier_{pooling}_best__level{feature_level}.pth")
+    torch.save(model.state_dict(), f"src/models/mil_classifier_{pooling}_best__level{feature_level}.pth")
     print(f"[INFO] Training complete. Best Val AUC: {best_auc:.4f}")
 
 def extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=False, test=False):
@@ -1102,7 +1105,7 @@ def evaluate_resnet_classifier(patch_level=3):
     acc = correct / total
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Classifier accuracy on validation patches: {acc:.4f}")
 
-def validate_resnet_classifier(model_path="resnet18_patch_classifier_level{level}.pth"):
+def validate_resnet_classifier(model_path="src/models/resnet18_patch_classifier_level{level}.pth"):
     """
     Sanity check for extracted patch features — no plotting, CLI only.
     """
