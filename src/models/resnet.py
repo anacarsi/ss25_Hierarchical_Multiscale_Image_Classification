@@ -89,18 +89,19 @@ class ResNet18ClassifierSIMCLR(nn.Module):
         if pretrained_weights_path and os.path.exists(pretrained_weights_path):
             state_dict = torch.load(pretrained_weights_path, map_location="cpu")
 
-            # If checkpoint is a dict with "encoder", get that part
-            if "encoder" in state_dict:
-                state_dict = state_dict["encoder"]
+            if pretrained_weights_path and os.path.exists(pretrained_weights_path):
+                state_dict = torch.load(pretrained_weights_path, map_location="cpu")
 
-            # Strip 'encoder.' prefix if present
-            new_state_dict = {}
-            for k, v in state_dict.items():
-                if k.startswith("encoder."):
-                    new_k = k.replace("encoder.", "")
-                else:
-                    new_k = k
-                new_state_dict[new_k] = v
+                # Remove "encoder." prefix, skip "projector." keys
+                new_state_dict = {
+                    k.replace("encoder.", ""): v
+                    for k, v in state_dict.items()
+                    if k.startswith("encoder.")
+                }
+
+                missing, unexpected = self.encoder.load_state_dict(new_state_dict, strict=False)
+                print(f"[INFO] Loaded weights with {len(missing)} missing and {len(unexpected)} unexpected keys.")
+
 
             missing, unexpected = self.encoder.load_state_dict(new_state_dict, strict=False)
             print(f"[INFO] Loaded weights with {len(missing)} missing and {len(unexpected)} unexpected keys.")

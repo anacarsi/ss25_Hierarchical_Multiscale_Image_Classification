@@ -578,7 +578,7 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
 
     optimizer = Adam(model.parameters(), lr=1e-4)
 
-    for epoch in range(5):
+    for epoch in range(50):
         model.train()
         total_loss, correct = 0, 0
         scaler = torch.cuda.amp.GradScaler()
@@ -608,7 +608,7 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
         val_acc = val_correct / len(val_dataset)
         print(f"Epoch {epoch+1}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
 
-    torch.save(model.state_dict(), f"src/models/resnet18_patch_classifier_{strategy}_level{level}.pth")
+    torch.save(model.state_dict(), f"src/models/resnet18_patch_classifier_{strategy}_level{level}_epochs50.pth")
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete.")
 
 
