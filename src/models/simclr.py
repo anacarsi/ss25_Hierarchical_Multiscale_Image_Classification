@@ -148,5 +148,5 @@ def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3, level=3):
             torch.save(model.state_dict(), checkpoint_path)
             print(f"[INFO] SimCLR checkpoint saved: {checkpoint_path}")
 
-    torch.save(model.state_dict(), "simclr_encoder_level{level}.pth")
+    torch.save(model.state_dict(), f"simclr_encoder_level{level}.pth")
     print("[INFO] SimCLR pretraining complete.")

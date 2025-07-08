@@ -9,6 +9,9 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 import numpy as np
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
 import shutil
 from torch.utils.data import DataLoader
 from PIL import Image, ImageDraw, ImageOps
@@ -518,13 +521,27 @@ def train_resnet_classifier(level=3):
         # Validation loop
         model.eval()
         val_correct = 0
+        all_preds, all_labels = [], []
         with torch.no_grad():
             for imgs, labels, _ in val_loader:
                 imgs, labels = imgs.to(device), labels.to(device)
                 outputs = model(imgs)
-                preds = outputs.argmax(dim=1)
+                preds = outputs.argmax(1)
                 val_correct += (preds == labels).sum().item()
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+
         val_acc = val_correct / len(val_dataset)
+        print(f"Epoch {epoch+1}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
+
+        # Confusion Matrix
+        #cm = confusion_matrix(all_labels, all_preds)
+        #sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Normal", "Tumor"], yticklabels=["Normal", "Tumor"])
+        #plt.xlabel("Predicted")
+        #plt.ylabel("True")
+        #plt.title("Validation Confusion Matrix")
+        #plt.show()
+
 
         print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
 
@@ -578,7 +595,7 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
 
     optimizer = Adam(model.parameters(), lr=1e-4)
 
-    for epoch in range(50):
+    for epoch in range(30):
         model.train()
         total_loss, correct = 0, 0
         scaler = torch.cuda.amp.GradScaler()
@@ -598,17 +615,29 @@ def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
 
         # Validation
         model.eval()
+        # Validation loop
+        model.eval()
         val_correct = 0
+        all_preds, all_labels = [], []
         with torch.no_grad():
             for imgs, labels, _ in val_loader:
                 imgs, labels = imgs.to(device), labels.to(device)
                 outputs = model(imgs)
-                val_correct += (outputs.argmax(1) == labels).sum().item()
+                preds = outputs.argmax(1)
+                val_correct += (preds == labels).sum().item()
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
 
         val_acc = val_correct / len(val_dataset)
         print(f"Epoch {epoch+1}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
 
-    torch.save(model.state_dict(), f"src/models/resnet18_patch_classifier_{strategy}_level{level}_epochs50.pth")
+        # Save checkpoint every 10 epochs
+        if (epoch + 1) % 10 == 0:
+            checkpoint_path = f"src/models/resnet18_patch_classifier_{strategy}_level{level}_epoch{epoch+1}.pth"
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checkpoint saved: {checkpoint_path}")
+
+    torch.save(model.state_dict(), f"src/models/resnet18_patch_classifier_{strategy}_level{level}_epochs30.pth")
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete.")
 
 
@@ -630,9 +659,15 @@ def train_mil_classifier(feature_level=3, pooling='attention', epochs=100, lr=1e
     train_loader = DataLoader(train_dataset, batch_size=1, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=1, shuffle=False)
 
-    # Model, optimizer, loss
     model = MILClassifier(feature_dim=512, pooling=pooling).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    # optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    encoder_params = list(model.encoder.parameters())
+    classifier_params = list(model.encoder.fc.parameters())
+    optimizer = torch.optim.Adam([
+        {'params': encoder_params, 'lr': 1e-5},       # Lower LR for encoder
+        {'params': classifier_params, 'lr': 1e-4},    # Higher LR for classification head
+    ])
+
     criterion = nn.CrossEntropyLoss()
 
     best_auc = 0.0
@@ -690,6 +725,12 @@ def train_mil_classifier(feature_level=3, pooling='attention', epochs=100, lr=1e
             if early_stop_counter >= patience:
                 print(f"[Early Stopping] No improvement for {patience} epochs. Stopping at epoch {epoch+1}.")
                 break
+        
+        # Save checkpoint every 10 epochs
+        if (epoch + 1) % 10 == 0:
+            checkpoint_path = f"src/models/mil_classifier_{pooling}_epoch{epoch+1}_level{feature_level}.pth"
+            torch.save(model.state_dict(), checkpoint_path)
+            print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checkpoint saved: {checkpoint_path}")
 
     # Save best model
     model.load_state_dict(best_model_wts)

@@ -85,6 +85,9 @@ class ResNet18ClassifierSIMCLR(nn.Module):
         super().__init__()
         self.encoder = models.resnet18(pretrained=False)
         self.encoder.fc = nn.Identity()  # SimCLR doesn't have a classifier head
+        for param in self.encoder.parameters():
+            param.requires_grad = True # all layers are trainable to prevent overfitting
+
 
         if pretrained_weights_path and os.path.exists(pretrained_weights_path):
             state_dict = torch.load(pretrained_weights_path, map_location="cpu")
@@ -92,7 +95,6 @@ class ResNet18ClassifierSIMCLR(nn.Module):
             if pretrained_weights_path and os.path.exists(pretrained_weights_path):
                 state_dict = torch.load(pretrained_weights_path, map_location="cpu")
 
-                # Remove "encoder." prefix, skip "projector." keys
                 new_state_dict = {
                     k.replace("encoder.", ""): v
                     for k, v in state_dict.items()
@@ -106,8 +108,14 @@ class ResNet18ClassifierSIMCLR(nn.Module):
             missing, unexpected = self.encoder.load_state_dict(new_state_dict, strict=False)
             print(f"[INFO] Loaded weights with {len(missing)} missing and {len(unexpected)} unexpected keys.")
 
-        # Final classification head
-        self.encoder.fc = nn.Linear(512, num_classes)
+        # Final classification head - added regularization
+        self.encoder.fc = nn.Sequential(
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(256, num_classes)
+        )
+
 
     def forward(self, x):
         return self.encoder(x)
