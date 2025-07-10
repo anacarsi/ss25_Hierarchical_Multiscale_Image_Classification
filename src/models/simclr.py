@@ -7,9 +7,12 @@ from src.datasets.patch_dataset import PatchDataset
 from src.datasets.simclr_dataset import SimCLRDataset
 from torch.utils.data import DataLoader
 from tqdm import tqdm
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+import datetime
 
 # Reference: https://arxiv.org/abs/2002.05709
 # SimCLR: A Simple Framework for Contrastive Learning of Visual Representations
+# 10.07 Trying to solve overfitting: added Gaussian blur, random rotation, and vertical flip to the augmentations
 
 
 class SimCLRModel(nn.Module):
@@ -66,8 +69,11 @@ def get_simclr_transform():
         [
             T.RandomResizedCrop(224),
             T.RandomHorizontalFlip(),
+            T.RandomVerticalFlip(), 
+            T.RandomRotation(90),   
             T.RandomApply([T.ColorJitter(0.4, 0.4, 0.4, 0.1)], p=0.8),
             T.RandomGrayscale(p=0.2),
+            T.GaussianBlur(kernel_size=(5, 9), sigma=(0.1, 2.0)), # gaussian blur for simclr
             T.ToTensor(),
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
@@ -78,10 +84,11 @@ def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3, level=3):
     torch.backends.cudnn.deterministic = True
 
     base_transform = get_simclr_transform()
-    base_dataset = PatchDataset(patch_dir, transform=None)
+    base_dataset = PatchDataset(patch_dir, transform=None) 
     simclr_dataset = SimCLRDataset(base_dataset, transform=base_transform)
+
     dataloader = DataLoader(
-        simclr_dataset, batch_size=batch_size, shuffle=True, num_workers=8
+        simclr_dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True
     )
 
     print(f"SimCLR dataset length: {len(simclr_dataset)}")
@@ -89,14 +96,17 @@ def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3, level=3):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     model = SimCLRModel().to(device)
-    # if torch.cuda.device_count() > 1:
-    # model = nn.DataParallel(model)
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+    # Add Weight Decay to optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5) 
+    # Add Learning Rate Scheduler
+    scheduler = ReduceLROnPlateau(optimizer, mode='min', factor=0.1, patience=15, verbose=True, min_lr=1e-6) 
 
     best_loss = float("inf")
     epochs_no_improve = 0
-    early_stop_patience = 20
+    early_stop_patience = 30 # patience for pretraining
     best_epoch = -1
+    scaler = torch.cuda.amp.GradScaler() # this allows for mixed precision training
     for epoch in range(epochs):
         total_loss = 0
         model.train()
@@ -104,49 +114,57 @@ def pretrain_simclr(patch_dir, epochs=200, batch_size=512, lr=1e-3, level=3):
             tqdm(dataloader, desc=f"SimCLR Epoch {epoch+1}")
         ):
             x_i, x_j = x_i.to(device), x_j.to(device)
-            z_i = model(x_i)
-            z_j = model(x_j)
-            loss = nt_xent_loss(z_i, z_j)
             optimizer.zero_grad()
-            if torch.isnan(loss):
-                print("[ERROR] Loss is NaN!")
-            try:
-                with torch.autograd.set_detect_anomaly(True):
-                    loss.backward()
-            except RuntimeError as e:
-                print(f"[ERROR] Backward pass failed: {e}")
+            with torch.cuda.amp.autocast(): 
+                z_i = model(x_i)
+                z_j = model(x_j)
+                loss = nt_xent_loss(z_i, z_j)
+
+            if torch.isnan(loss): # skip this step if loss is NaN
+                print(f"[ERROR] Loss is NaN at step {step}!")
                 continue
-            optimizer.step()
+
+            try:
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            except RuntimeError as e:
+                print(f"[ERROR] Backward pass failed at step {step}: {e}")
+                continue
             total_loss += loss.item()
 
         avg_loss = total_loss / len(dataloader)
-        print(f"Epoch {epoch+1}, Loss: {avg_loss:.4f}")
+        print(f"Epoch {epoch+1}, SimCLR Loss: {avg_loss:.4f}")
+
+        scheduler.step(avg_loss) # step the scheduler based on average loss
 
         # Early stopping
+        now = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
         if avg_loss < best_loss:
             best_loss = avg_loss
             epochs_no_improve = 0
             best_epoch = epoch + 1
-            # Optionally save best model so far
-            torch.save(model.state_dict(), "simclr_encoder_best_level{level}.pth")
+            # Save best model so far
+            best_model_path = f"src/models/simclr_encoder_best_level{level}_{now}.pth"
+            torch.save(model.state_dict(), best_model_path)
+            print(f"[INFO] Best SimCLR model saved with loss: {best_loss:.4f} at {best_model_path}")
         else:
             epochs_no_improve += 1
 
-        if (epoch + 1) % 20 == 0:
+        if epochs_no_improve >= early_stop_patience:
             print(
-                f"[INFO] Early stopping check: {epochs_no_improve} epochs without improvement (patience={early_stop_patience})"
+                f"[INFO] Early stopping triggered at epoch {epoch+1}. Best epoch: {best_epoch} with loss {best_loss:.4f}"
             )
-            if epochs_no_improve >= early_stop_patience:
-                print(
-                    f"[INFO] Early stopping triggered at epoch {epoch+1}. Best epoch: {best_epoch} with loss {best_loss:.4f}"
-                )
-                break
+            break
 
-        # Save checkpoint every 50 epochs
+        # Save checkpoint every 50 epochs (or adjust frequency)
         if (epoch + 1) % 50 == 0:
-            checkpoint_path = f"simclr_encoder_epoch{epoch+1}_level{level}.pth"
+            now_ckpt = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+            checkpoint_path = f"src/models/simclr_encoder_epoch{epoch+1}_level{level}_{now_ckpt}.pth"
             torch.save(model.state_dict(), checkpoint_path)
             print(f"[INFO] SimCLR checkpoint saved: {checkpoint_path}")
 
-    torch.save(model.state_dict(), f"simclr_encoder_level{level}.pth")
-    print("[INFO] SimCLR pretraining complete.")
+    now_final = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+    final_model_path = f"src/models/simclr_encoder_level{level}_{now_final}.pth"
+    torch.save(model.state_dict(), final_model_path)
+    print(f"[INFO] SimCLR pretraining complete. Final model saved: {final_model_path}.")

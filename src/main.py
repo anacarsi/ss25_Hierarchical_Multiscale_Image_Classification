@@ -3,6 +3,10 @@ import sys
 import argparse
 import requests
 from tqdm import tqdm
+from torch.utils.data import Subset
+import torchvision.transforms as T
+from torch.optim.lr_scheduler import ReduceLROnPlateau
+from datetime import datetime
 from sklearn.metrics import roc_auc_score
 import copy
 import torch
@@ -418,29 +422,32 @@ def parse_xml_mask(xml_path, level_dims, slide):
 
 def get_dataloaders(patch_dir, test_ratio=0.2, batch_size=BATCH_SIZE, balanced=False):
     slide_dirs = [d for d in os.listdir(patch_dir) if os.path.isdir(os.path.join(patch_dir, d))]
-    train_slides, val_slides = train_test_split(slide_dirs, test_size=test_ratio, random_state=42)
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Found {len(slide_dirs)} slides in {patch_dir}.")
 
-    # Data augmentation
-    train_transform = transforms.Compose([
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomVerticalFlip(),
-        transforms.RandomRotation(90),
-        transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    train_slides, val_slides = train_test_split(slide_dirs, test_size=test_ratio, random_state=42)
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Train slides: {len(train_slides)}, Validation slides: {len(val_slides)}")
+
+    # Data augmentation for classification task
+    train_transform = T.Compose([
+        T.RandomHorizontalFlip(),
+        T.RandomVerticalFlip(),
+        T.RandomRotation(90),
+        T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
+        T.Resize((224, 224)),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
-    val_transform = transforms.Compose([
-        transforms.Resize((224, 224)),
-        transforms.ToTensor(),
-        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    val_transform = T.Compose([
+        T.Resize((224, 224)),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
     ])
 
     train_dataset = PatchDataset(
         patch_dir,
         slide_names=train_slides,
         tumor_transform=train_transform,
-        normal_transform=val_transform,
+        normal_transform=train_transform, # Apply augmentation to both classes in training
         balanced=balanced,
         max_samples=SAMPLES_PER_CLASS if balanced else None
     )
@@ -448,63 +455,65 @@ def get_dataloaders(patch_dir, test_ratio=0.2, batch_size=BATCH_SIZE, balanced=F
         patch_dir,
         slide_names=val_slides,
         tumor_transform=val_transform,
-        normal_transform=val_transform
+        normal_transform=val_transform # No augmentation for validation
     )
 
-    # Balance the validation set, get indices for each class
-    val_labels = np.array(val_dataset.labels)
-    tumor_indices = np.where(val_labels == 1)[0]
-    normal_indices = np.where(val_labels == 0)[0]
+    # Balance the validation set w subset if there are enough samples -> subset to the minimum of tumor and normal patches
+    val_labels_array = np.array(val_dataset.labels)
+    tumor_indices = np.where(val_labels_array == 1)[0]
+    normal_indices = np.where(val_labels_array == 0)[0]
     n_tumor = len(tumor_indices)
     n_normal = len(normal_indices)
+
     if n_tumor > 0 and n_normal > 0:
         n_min = min(n_tumor, n_normal)
-        # Randomly select n_min from each class
         rng = np.random.default_rng(42)
         tumor_sel = rng.choice(tumor_indices, n_min, replace=False)
         normal_sel = rng.choice(normal_indices, n_min, replace=False)
         selected_indices = np.concatenate([tumor_sel, normal_sel])
-        # Subset the dataset
-        from torch.utils.data import Subset
         val_dataset = Subset(val_dataset, selected_indices)
         print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Validation set balanced: {n_min} normal and {n_min} tumor patches.")
     else:
         print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Could not balance validation set: tumor patches = {n_tumor}, normal patches = {n_normal}.")
 
-    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=8, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, num_workers=8, pin_memory=True)
 
     return train_loader, val_loader, train_dataset, val_dataset
 
 def train_resnet_classifier(level=3):
-    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training ResNet18 classifier...")
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training ResNet18 classifier without SimCLR pretraining...")
     patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
 
     train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(
         patch_dir, test_ratio=0.2, batch_size=BATCH_SIZE
     )
+    if train_loader is None: return
 
     model = ResNet18Classifier().to(device)
-    if torch.cuda.device_count() > 1:
-        model = nn.DataParallel(model)
 
     # Weighted loss for class imbalance
     all_labels = np.array(train_dataset.labels)
-    class_sample_count = np.array([np.sum(all_labels == t) for t in np.unique(all_labels)])
+    unique_labels, counts = np.unique(all_labels, return_counts=True)
+    class_sample_count = np.array([counts[np.where(unique_labels == t)[0][0]] if t in unique_labels else 1 for t in [0, 1]])
     weight = 1. / class_sample_count
     weight = weight / np.min(weight)
     class_weights = torch.FloatTensor(weight).to(device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
-    optimizer = Adam(model.parameters(), lr=1e-4)
+    optimizer = Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+    scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=5, verbose=True, threshold=0.001)
 
     num_epochs = 30
+    best_val_acc = 0.0
+    epochs_no_improve = 0
+    early_stop_patience = 10
 
     for epoch in range(num_epochs):
         model.train()
         total_loss, correct = 0, 0
         scaler = torch.cuda.amp.GradScaler()
-        for imgs, labels, _ in train_loader:
+        for imgs, labels, _ in tqdm(train_loader, desc=f"Epoch {epoch+1} Training"):
             imgs, labels = imgs.to(device), labels.to(device)
             optimizer.zero_grad()
             with torch.cuda.amp.autocast():
@@ -521,124 +530,295 @@ def train_resnet_classifier(level=3):
         # Validation loop
         model.eval()
         val_correct = 0
-        all_preds, all_labels = [], []
         with torch.no_grad():
-            for imgs, labels, _ in val_loader:
+            for imgs, labels, _ in tqdm(val_loader, desc=f"Epoch {epoch+1} Validation"):
                 imgs, labels = imgs.to(device), labels.to(device)
                 outputs = model(imgs)
                 preds = outputs.argmax(1)
                 val_correct += (preds == labels).sum().item()
-                all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
 
-        val_acc = val_correct / len(val_dataset)
-        print(f"Epoch {epoch+1}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
-
-        # Confusion Matrix
-        #cm = confusion_matrix(all_labels, all_preds)
-        #sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Normal", "Tumor"], yticklabels=["Normal", "Tumor"])
-        #plt.xlabel("Predicted")
-        #plt.ylabel("True")
-        #plt.title("Validation Confusion Matrix")
-        #plt.show()
-
-
+        val_acc = val_correct / len(val_loader.dataset)
         print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
 
-        # Save checkpoint every 50 epochs
+        scheduler.step(val_acc)
+
+        # Early stopping 
+        if val_acc > best_val_acc:
+            best_val_acc = val_acc
+            epochs_no_improve = 0
+            now = datetime.now().strftime('%Y%m%d%H%M%S')
+            best_model_path = f"src/models/resnet18_patch_classifier_best_level{level}_{now}.pth"
+            torch.save(model.state_dict(), best_model_path)
+            print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Best validation accuracy achieved. Model saved to {best_model_path}")
+        else:
+            epochs_no_improve += 1
+            if epochs_no_improve >= early_stop_patience:
+                print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Early stopping triggered at epoch {epoch+1}.")
+                break
+
+        # Save checkpoint every 10 epochs
         if (epoch + 1) % 10 == 0:
-            checkpoint_path = f"src/models/resnet18_patch_classifier_epoch{epoch+1}_level{level}.pth"
+            now = datetime.now().strftime('%Y%m%d%H%M%S')
+            checkpoint_path = f"src/models/resnet18_patch_classifier_epoch{epoch+1}_level{level}_{now}.pth"
             torch.save(model.state_dict(), checkpoint_path)
             print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checkpoint saved: {checkpoint_path}")
 
-    torch.save(model.state_dict(), "src/models/resnet18_patch_classifier_level{level}.pth")
-    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Model saved resnet18_patch_classifier_level{level}.pth.")
+    now = datetime.now().strftime('%Y%m%d%H%M%S')
+    final_model_path = f"src/models/resnet18_patch_classifier_final_level{level}_{now}.pth"
+    torch.save(model.state_dict(), final_model_path)
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Final model saved to {final_model_path}.")
 
-def train_resnet_classifier_strategic(level=3, strategy="self_supervised"):
+def train_resnet_classifier_strategic(level=3, strategy="self_supervised", phase1_epochs=10, phase2_epochs=20):
     assert strategy in {"balanced", "weighted_loss", "self_supervised"}, "Invalid strategy option"
 
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training ResNet18 classifier using strategy: {strategy}...")
     patch_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", f"level_{level}")
-    model_dir = os.path.join(os.getcwd(), "src", "models", f"simclr_encoder_level{level}.pth")
-    # Always use full dataset if using weighted loss or self-supervised
+    model_dir = os.path.join(os.getcwd(), "src", "models", f"simclr_encoder_best_level{level}.pth")
+
     balanced_flag = (strategy == "balanced")
     train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(
         patch_dir, test_ratio=0.2, batch_size=BATCH_SIZE, balanced=balanced_flag
     )
+    if train_loader is None: return
 
-    # Compute class weights (shared logic)
-    class_counts = train_dataset.get_class_counts()
-    total = sum(class_counts.values())
-    weights = [total / class_counts[i] for i in range(len(class_counts))]
-    weights = torch.FloatTensor(weights).to(device)
+    # Compute class weights
+    unique_labels_train, counts_train = np.unique(train_dataset.labels, return_counts=True)
+    class_sample_count_train = np.array([counts_train[np.where(unique_labels_train == t)[0][0]] if t in unique_labels_train else 1 for t in [0, 1]])
+    weights = 1. / class_sample_count_train
+    weights = weights / np.min(weights)
+    class_weights_tensor = torch.FloatTensor(weights).to(device)
 
-    # Load model + loss based on strategy
+    model = None
+    criterion = None
+
     if strategy == "self_supervised":
         if not os.path.exists(model_dir):
-            print(f"Not found  {model_dir}. Pretraining SimCLR encoder...")
+            print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} SimCLR pre-trained weights not found at {model_dir}. Pretraining SimCLR encoder...")
             pretrain_simclr(patch_dir, epochs=200, level=level)
-        model_path = os.path.join(os.getcwd(), "src", "models", f"simclr_encoder_level{level}.pth")
-        model = ResNet18ClassifierSIMCLR(pretrained_weights_path=model_path).to(device)
-        criterion = nn.CrossEntropyLoss(weight=weights)
+            if not os.path.exists(model_dir):
+                print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} SimCLR pretraining finished, but best model was not saved or found. Please check logs.")
+                return
+
+        # Phase 1: Train classification head with frozen encoder
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Phase 1: Training classification head with frozen encoder.")
+        model = ResNet18ClassifierSIMCLR(pretrained_weights_path=model_dir, freeze_encoder=True).to(device)
+        criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
+        optimizer = Adam(model.parameters(), lr=5e-4, weight_decay=1e-5)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=3, verbose=True, threshold=0.001)
+
+        best_val_acc = 0.0
+        epochs_no_improve = 0
+        early_stop_patience = 5
+
+        for epoch in range(phase1_epochs):
+            model.train()
+            total_loss, correct = 0, 0
+            scaler = torch.cuda.amp.GradScaler()
+            for imgs, labels, _ in tqdm(train_loader, desc=f"Phase 1 Epoch {epoch+1} Training"):
+                imgs, labels = imgs.to(device), labels.to(device)
+                optimizer.zero_grad()
+                with torch.cuda.amp.autocast():
+                    outputs = model(imgs)
+                    loss = criterion(outputs, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                total_loss += loss.item()
+                correct += (outputs.argmax(1) == labels).sum().item()
+            train_acc = correct / len(train_dataset)
+
+            model.eval()
+            val_correct = 0
+            with torch.no_grad():
+                for imgs, labels, _ in tqdm(val_loader, desc=f"Phase 1 Epoch {epoch+1} Validation"):
+                    imgs, labels = imgs.to(device), labels.to(device)
+                    outputs = model(imgs)
+                    preds = outputs.argmax(1)
+                    val_correct += (preds == labels).sum().item()
+            val_acc = val_correct / len(val_loader.dataset)
+            print(f"Phase 1 Epoch {epoch+1}/{phase1_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
+
+            scheduler.step(val_acc)
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                epochs_no_improve = 0
+                now = datetime.now().strftime('%Y%m%d%H%M%S')
+                temp_model_save_path = f"src/models/resnet18_patch_classifier_simclr_phase1_best_level{level}_{now}.pth"
+                torch.save(model.state_dict(), temp_model_save_path)
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve >= early_stop_patience:
+                    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Early stopping for Phase 1 triggered.")
+                    break
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Phase 1 complete. Loading best Phase 1 model for Phase 2.")
+        # Load the best model from Phase 1 to continue to Phase 2
+        model.load_state_dict(torch.load(temp_model_save_path, map_location=device))
+        best_val_acc = 0.0
+        epochs_no_improve = 0
+
+        # Phase 2: Fine-tune entire model with unfrozen encoder
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Phase 2: Fine-tuning entire model with unfrozen encoder.")
+        model = ResNet18ClassifierSIMCLR(pretrained_weights_path=temp_model_save_path, freeze_encoder=False).to(device)
+        optimizer = Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=5, verbose=True, threshold=0.001, min_lr=1e-7)
+
+        for epoch in range(phase2_epochs):
+            model.train()
+            total_loss, correct = 0, 0
+            scaler = torch.cuda.amp.GradScaler()
+            for imgs, labels, _ in tqdm(train_loader, desc=f"Phase 2 Epoch {epoch+1} Training"):
+                imgs, labels = imgs.to(device), labels.to(device)
+                optimizer.zero_grad()
+                with torch.cuda.amp.autocast():
+                    outputs = model(imgs)
+                    loss = criterion(outputs, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                total_loss += loss.item()
+                correct += (outputs.argmax(1) == labels).sum().item()
+            train_acc = correct / len(train_dataset)
+
+            model.eval()
+            val_correct = 0
+            with torch.no_grad():
+                for imgs, labels, _ in tqdm(val_loader, desc=f"Phase 2 Epoch {epoch+1} Validation"):
+                    imgs, labels = imgs.to(device), labels.to(device)
+                    outputs = model(imgs)
+                    preds = outputs.argmax(1)
+                    val_correct += (preds == labels).sum().item()
+            val_acc = val_correct / len(val_loader.dataset)
+            print(f"Phase 2 Epoch {epoch+1}/{phase2_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
+
+            scheduler.step(val_acc)
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                epochs_no_improve = 0
+                now = datetime.now().strftime('%Y%m%d%H%M%S')
+                best_model_path = f"src/models/resnet18_patch_classifier_simclr_best_level{level}_{now}.pth"
+                torch.save(model.state_dict(), best_model_path)
+                print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Best validation accuracy achieved (Phase 2). Model saved to {best_model_path}")
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve >= early_stop_patience:
+                    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Early stopping for Phase 2 triggered.")
+                    break
 
     elif strategy == "balanced":
         model = ResNet18Classifier().to(device)
         if torch.cuda.device_count() > 1:
             model = nn.DataParallel(model)
         criterion = nn.CrossEntropyLoss()
+        optimizer = Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=5, verbose=True, threshold=0.001)
+        num_epochs = 30
+        best_val_acc = 0.0
+        epochs_no_improve = 0
+        early_stop_patience = 10
+
+        for epoch in range(num_epochs):
+            model.train()
+            total_loss, correct = 0, 0
+            scaler = torch.cuda.amp.GradScaler()
+            for imgs, labels, _ in tqdm(train_loader, desc=f"Epoch {epoch+1} Training"):
+                imgs, labels = imgs.to(device), labels.to(device)
+                optimizer.zero_grad()
+                with torch.cuda.amp.autocast():
+                    outputs = model(imgs)
+                    loss = criterion(outputs, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                total_loss += loss.item()
+                correct += (outputs.argmax(1) == labels).sum().item()
+            train_acc = correct / len(train_dataset)
+
+            model.eval()
+            val_correct = 0
+            with torch.no_grad():
+                for imgs, labels, _ in tqdm(val_loader, desc=f"Epoch {epoch+1} Validation"):
+                    imgs, labels = imgs.to(device), labels.to(device)
+                    outputs = model(imgs)
+                    preds = outputs.argmax(1)
+                    val_correct += (preds == labels).sum().item()
+            val_acc = val_correct / len(val_loader.dataset)
+            print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
+
+            scheduler.step(val_acc)
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                epochs_no_improve = 0
+                now = datetime.now().strftime('%Y%m%d%H%M%S')
+                best_model_path = f"src/models/resnet18_patch_classifier_balanced_best_level{level}_{now}.pth"
+                torch.save(model.state_dict(), best_model_path)
+                print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Best validation accuracy achieved. Model saved to {best_model_path}")
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve >= early_stop_patience:
+                    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Early stopping triggered at epoch {epoch+1}.")
+                    break
 
     elif strategy == "weighted_loss":
         model = ResNet18Classifier().to(device)
         if torch.cuda.device_count() > 1:
             model = nn.DataParallel(model)
-        criterion = nn.CrossEntropyLoss(weight=weights)
+        criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
+        optimizer = Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.1, patience=5, verbose=True, threshold=0.001)
+        num_epochs = 30
+        best_val_acc = 0.0
+        epochs_no_improve = 0
+        early_stop_patience = 10
 
-    optimizer = Adam(model.parameters(), lr=1e-4)
-
-    for epoch in range(30):
-        model.train()
-        total_loss, correct = 0, 0
-        scaler = torch.cuda.amp.GradScaler()
-        for imgs, labels, _ in train_loader:
-            imgs, labels = imgs.to(device), labels.to(device)
-            optimizer.zero_grad()
-            with torch.cuda.amp.autocast():
-                outputs = model(imgs)
-                loss = criterion(outputs, labels)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            total_loss += loss.item()
-            correct += (outputs.argmax(1) == labels).sum().item()
-
-        train_acc = correct / len(train_dataset)
-
-        # Validation
-        model.eval()
-        # Validation loop
-        model.eval()
-        val_correct = 0
-        all_preds, all_labels = [], []
-        with torch.no_grad():
-            for imgs, labels, _ in val_loader:
+        for epoch in range(num_epochs):
+            model.train()
+            total_loss, correct = 0, 0
+            scaler = torch.cuda.amp.GradScaler()
+            for imgs, labels, _ in tqdm(train_loader, desc=f"Epoch {epoch+1} Training"):
                 imgs, labels = imgs.to(device), labels.to(device)
-                outputs = model(imgs)
-                preds = outputs.argmax(1)
-                val_correct += (preds == labels).sum().item()
-                all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(labels.cpu().numpy())
+                optimizer.zero_grad()
+                with torch.cuda.amp.autocast():
+                    outputs = model(imgs)
+                    loss = criterion(outputs, labels)
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                total_loss += loss.item()
+                correct += (outputs.argmax(1) == labels).sum().item()
+            train_acc = correct / len(train_dataset)
 
-        val_acc = val_correct / len(val_dataset)
-        print(f"Epoch {epoch+1}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
+            model.eval()
+            val_correct = 0
+            with torch.no_grad():
+                for imgs, labels, _ in tqdm(val_loader, desc=f"Epoch {epoch+1} Validation"):
+                    imgs, labels = imgs.to(device), labels.to(device)
+                    outputs = model(imgs)
+                    preds = outputs.argmax(1)
+                    val_correct += (preds == labels).sum().item()
+            val_acc = val_correct / len(val_loader.dataset)
+            print(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}")
 
-        # Save checkpoint every 10 epochs
-        if (epoch + 1) % 10 == 0:
-            checkpoint_path = f"src/models/resnet18_patch_classifier_{strategy}_level{level}_epoch{epoch+1}.pth"
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checkpoint saved: {checkpoint_path}")
+            scheduler.step(val_acc)
+            if val_acc > best_val_acc:
+                best_val_acc = val_acc
+                epochs_no_improve = 0
+                now = datetime.now().strftime('%Y%m%d%H%M%S')
+                best_model_path = f"src/models/resnet18_patch_classifier_weighted_loss_best_level{level}_{now}.pth"
+                torch.save(model.state_dict(), best_model_path)
+                print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Best validation accuracy achieved. Model saved to {best_model_path}")
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve >= early_stop_patience:
+                    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Early stopping triggered at epoch {epoch+1}.")
+                    break
 
-    torch.save(model.state_dict(), f"src/models/resnet18_patch_classifier_{strategy}_level{level}_epochs30.pth")
-    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete.")
+    now = datetime.now().strftime('%Y%m%d%H%M%S')
+    final_model_save_path = f"src/models/resnet18_patch_classifier_{strategy}_final_level{level}_{now}.pth"
+    if model is not None:
+        torch.save(model.state_dict(), final_model_save_path)
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Final training complete. Model saved to {final_model_save_path}.")
+    else:
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Model was not initialized. Check strategy parameter.")
 
 
 def train_mil_classifier(feature_level=3, pooling='attention', epochs=100, lr=1e-4, patience=10):
