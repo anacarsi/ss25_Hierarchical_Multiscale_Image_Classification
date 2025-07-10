@@ -1453,7 +1453,7 @@ def count_number_tumor_patches(level=3):
 
 
 def extract_features_per_wsi(
-    level=3, model_name="resnet18_patch_classifier_final", simclr_trained_model=False
+    level=3, model_name="resnet18_patch_classifier_final_20250710055900", simclr_trained_model=False
 ):
     """
     Extract features from patches and save them grouped by WSI for MIL.
@@ -1827,6 +1827,12 @@ def main():
         help="Training strategy for ResNet classifier",
     )
     parser.add_argument(
+        "--model_name",
+        type=str,
+        default="resnet18_patch_classifier_final_20250710055900",
+        help="Name of the ResNet model to use for feature extraction",
+    )
+    parser.add_argument(
         "--train_mil",
         action="store_true",
         help="Train MIL classifier with specified pooling method",
@@ -1885,8 +1891,8 @@ def main():
                     f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patches must be extracted at level {lvl} before extracting features."
                 )
                 return
-        extract_features(
-            level=int(args.patch_level) if args.patch_level != "all" else 3
+        extract_features_per_wsi(
+            level=int(args.patch_level) if args.patch_level != "all" else 3, model_name=args.model_name
         )  # default to level 3 if all
 
     # Train model
