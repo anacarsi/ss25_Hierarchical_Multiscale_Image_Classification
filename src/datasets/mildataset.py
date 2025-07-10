@@ -5,7 +5,7 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
 import glob
-
+import xml.etree.ElementTree as ET
 
 class bcolors:
     HEADER = "\033[95m"
@@ -91,7 +91,7 @@ class WSIMILTestDataset(Dataset):
 
     def _get_wsi_labels(self):
         """
-        A slide is 'tumor' if any tumor annotation exists, 'normal' otherwise.
+        Assigns label 1 (tumor) if an XML annotation file exists for the WSI, else 0 (normal).
         """
         labels = {}
         test_annot_dir = os.path.join(
@@ -103,27 +103,8 @@ class WSIMILTestDataset(Dataset):
             if wsi_file.endswith(".tif"):
                 prefix = wsi_file.replace(".tif", "")
                 xml_path = os.path.join(test_annot_dir, f"{prefix}.xml")
-
-                # If an XML exists, check for tumor annotations
-                is_tumor = False
-                if os.path.exists(xml_path):
-                    try:
-                        tree = ET.parse(xml_path)
-                        root = tree.getroot()
-                        for annotation in root.findall(".//Annotation"):
-                            for region in annotation.findall(".//Region"):
-                                if region.get("Type") == "Tumor":
-                                    is_tumor = True
-                                    break
-                            if is_tumor:
-                                break
-                    except Exception as e:
-                        print(
-                            f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Error parsing XML for {prefix}: {e}"
-                        )
-
-                # Assign label (1 for tumor, 0 for normal)
-                labels[prefix] = 1 if is_tumor else 0
+                # If the XML file exists, label as tumor (1), else normal (0)
+                labels[prefix] = 1 if os.path.exists(xml_path) else 0
         return labels
 
     def __len__(self):

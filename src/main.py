@@ -1212,9 +1212,17 @@ def train_mil_classifier(
     )
 
 
-def test_mil_classifier(model, feature_dir, device):
+def test_mil_classifier(feature_level, pooling="attention"):
+    model_path = os.path.join(
+        os.getcwd(), "src", "models", "mil_classifier_attention_best_level3_resnet18_patch_classifier_final_level3_20250710055900.pth.pth")
+    model = MILClassifier(feature_dim=512, num_classes=2) # Feature dim for ResNet18
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     model.to(device)
+    feature_dir = os.path.join(
+        os.getcwd(), "data", "camelyon16", "features", f"level_{feature_level}"
+    )
 
     test_dataset = WSIMILTestDataset(feature_dir)
     # Using batch_size=1 for WSI because each "bag" is one WSI
@@ -1649,9 +1657,15 @@ def extract_features_per_wsi(
 
         wsi_paths_list.append(wsi_feature_path)
 
-    all_wsi_features_list_path = os.path.join(
-        features_save_base_dir, "wsi_feature_paths.txt"
-    )
+    now = datetime.now().strftime("%Y%m%d%H%M%S")
+    if test:
+        all_wsi_features_list_path = os.path.join(
+            features_save_base_dir, f"wsi_feature_paths_test_{now}.txt"
+        )
+    else:
+        all_wsi_features_list_path = os.path.join(
+            features_save_base_dir, f"wsi_feature_paths_train_{now}.txt"
+        )
     with open(all_wsi_features_list_path, "w") as f:
         for p in wsi_paths_list:
             f.write(f"{p}\n")
@@ -1853,7 +1867,6 @@ def main():
     parser.add_argument(
         "--test_patch",
         type=str,
-        store=True,
         default="test",
     )
     parser.add_argument("-prep", "--prepare", action="store_true", help="Prepare data")
@@ -1979,7 +1992,7 @@ def main():
             for lvl in [0, 1, 2, 3]:
                 extract_patches(level=lvl)
         else:
-            extract_patches(level=int(args.patch_level), test=args.test)
+            extract_patches(level=int(args.patch_level), test=args.test_patch)
 
     # Extract features
     if args.extract_features:
@@ -1995,7 +2008,7 @@ def main():
                 return
         extract_features_per_wsi(
             level=int(args.patch_level) if args.patch_level != "all" else 3,
-            model_name=args.model_name,
+            model_name=args.model_name, test=args.test_patch == "test",
         )  # default to level 3 if all
 
     # Train model
