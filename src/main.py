@@ -38,11 +38,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from models.resnet import (
     ResNet18Classifier,
     ResNet18FeatureExtractor,
-    UnifiedResNet,
     ResNet18ClassifierSIMCLR,
 )
 from datasets.patch_dataset import PatchDataset
-from datasets.mildataset import WSIMILDDataset, get_mil_dataloaders
+from datasets.mildataset import WSIMILTestDataset, get_mil_dataloaders
 from models.mil_classifier import MILClassifier
 from utils.evaluation_FROC import (
     computeEvaluationMask,
@@ -52,8 +51,10 @@ from utils.evaluation_FROC import (
     computeFROC,
     plotFROC,
 )
-from models.simclr import pretrain_simclr, get_simclr_transform
+from sklearn.metrics import f1_score, precision_score, recall_score
+from models.simclr import pretrain_simclr
 import zipfile
+import pandas as pd
 
 
 class bcolors:
@@ -68,6 +69,7 @@ class bcolors:
     UNDERLINE = "\033[4m"
 
 
+MODEL_PATH = "mil_classifier_attention_final_level3_resnet18_patch_classifier_final_level3_20250710055900.pth.pth"
 BATCH_SIZE = 512  # 4 GPUS - 128 per GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -1061,11 +1063,11 @@ def train_mil_classifier(
     epochs=100,
     lr=1e-4,
     patience=10,
-    model_type="resnet18_patch_classifier_final",
+    model_type="resnet18_patch_classifier_final_level3_20250710055900.pth",
 ):
     """
     Trains a Multiple Instance Learning (MIL) classifier using extracted WSI features.
-    Args:
+    Parameters:
     - feature_level (int): WSI level from which features were extracted.
     - pooling (str): Aggregation method ('attention', 'mean', 'max').
     - epochs (int): Number of training epochs.
@@ -1210,6 +1212,84 @@ def train_mil_classifier(
     )
 
 
+def test_mil_classifier(model, feature_dir, device):
+    model.eval()
+    model.to(device)
+
+    test_dataset = WSIMILTestDataset(feature_dir)
+    # Using batch_size=1 for WSI because each "bag" is one WSI
+    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+
+    all_predictions = []
+    all_true_labels = []
+    wsi_names = []
+
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Starting model testing...")
+
+    with torch.no_grad():
+        for features, labels, wsi_name in test_loader:
+            # Features are a list of tensors, each tensor is a bag of patches for one WSI
+            # In our DataLoader, batch_size=1, so features will be a list containing one tensor
+            features = features.squeeze(0).to(
+                device
+            )  # Remove batch dimension, move to device
+            labels = labels.to(device)
+
+            output = model(features)  # Output is logits for each class
+            probabilities = (
+                torch.softmax(output, dim=1)[:, 1].cpu().item()
+            )  # Probability of positive class (tumor)
+            predicted_label = (
+                probabilities > 0.5
+            ).long()  # Binary prediction based on 0.5 threshold
+
+            all_predictions.append(probabilities)
+            all_true_labels.append(labels.cpu().item())
+            wsi_names.append(wsi_name[0])  # wsi_name is a tuple
+
+            print(
+                f"WSI: {wsi_name[0]}, True Label: {labels.cpu().item()}, Predicted Probability (Tumor): {probabilities:.4f}, Predicted Class: {predicted_label.item()}"
+            )
+
+    # Calculate metrics
+    auc_score = roc_auc_score(all_true_labels, all_predictions)
+    # Convert probabilities to binary predictions for other metrics
+    binary_predictions = [1 if p > 0.5 else 0 for p in all_predictions]
+    accuracy = accuracy_score(all_true_labels, binary_predictions)
+    precision = precision_score(all_true_labels, binary_predictions, zero_division=0)
+    recall = recall_score(all_true_labels, binary_predictions, zero_division=0)
+    f1 = f1_score(all_true_labels, binary_predictions, zero_division=0)
+
+    print(f"\n{bcolors.OKGREEN}--- Test Results ---{bcolors.ENDC}")
+    print(f"Test AUC: {auc_score:.4f}")
+    print(f"Test Accuracy: {accuracy:.4f}")
+    print(f"Test Precision: {precision:.4f}")
+    print(f"Test Recall: {recall:.4f}")
+    print(f"Test F1-Score: {f1:.4f}")
+
+    # save detailed results
+    results_df = pd.DataFrame(
+        {
+            "WSI_Name": wsi_names,
+            "True_Label": all_true_labels,
+            "Predicted_Probability": all_predictions,
+            "Predicted_Class": binary_predictions,
+        }
+    )
+    results_df.to_csv("mil_test_results.csv", index=False)
+    print(
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Detailed results saved to mil_test_results.csv"
+    )
+
+    return {
+        "auc": auc_score,
+        "accuracy": accuracy,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1,
+    }
+
+
 def extract_patches(
     patch_size=224, level=3, stride=None, pad=True, only_tumor=False, test=False
 ):
@@ -1220,16 +1300,22 @@ def extract_patches(
     patch_sizes = {0: 1792, 1: 896, 2: 448, 3: 224}
     patch_size = patch_sizes.get(level, 224)
 
-    wsi_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img")
-    annot_dir_train = os.path.join(
-        os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
-    )
-    annot_dir_test = os.path.join(
-        os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
-    )
-    level_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
-    )
+    if test:
+        wsi_dir = os.path.join(os.getcwd(), "data", "camelyon16", "test", "img")
+        annot_dir_test = os.path.join(
+            os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
+        )
+        level_dir = os.path.join(
+            os.getcwd(), "data", "camelyon16", "patches", f"test_level_{level}", "test"
+        )
+    else:
+        wsi_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img")
+        annot_dir_train = os.path.join(
+            os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
+        )
+        level_dir = os.path.join(
+            os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
+        )
     os.makedirs(level_dir, exist_ok=True)
     for file in os.listdir(wsi_dir):
         if not file.endswith(".tif"):
@@ -1453,7 +1539,10 @@ def count_number_tumor_patches(level=3):
 
 
 def extract_features_per_wsi(
-    level=3, model_name="resnet18_patch_classifier_final_20250710055900", simclr_trained_model=False
+    test=True,
+    level=3,
+    model_name="resnet18_patch_classifier_final_20250710055900",
+    simclr_trained_model=False,
 ):
     """
     Extract features from patches and save them grouped by WSI for MIL.
@@ -1462,9 +1551,7 @@ def extract_features_per_wsi(
     - model_name: str, base name of the pre-trained ResNet18 classifier model.
     - simclr_trained_model: bool, True if the model was trained with SimCLR pretraining.
     """
-    model_path = os.path.join(
-        os.getcwd(), "src", "models", f"{model_name}_level{level}.pth"
-    )
+    model_path = os.path.join(os.getcwd(), "src", "models", f"{model_name}")
 
     transform = T.Compose(
         [
@@ -1473,10 +1560,14 @@ def extract_features_per_wsi(
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
-
-    patch_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
-    )
+    if not test:
+        patch_dir = os.path.join(
+            os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
+        )
+    else:
+        patch_dir = os.path.join(
+            os.getcwd(), "data", "camelyon16", "patches", f"test_level_{level}", "test"
+        )
 
     if not os.path.exists(patch_dir) or not os.listdir(patch_dir):
         print(
@@ -1759,6 +1850,12 @@ def main():
         default="3",
         help="WSI level for patch extraction (0, 1, 2, 3, or 'all' for all levels)",
     )
+    parser.add_argument(
+        "--test_patch",
+        type=str,
+        store=True,
+        default="test",
+    )
     parser.add_argument("-prep", "--prepare", action="store_true", help="Prepare data")
     parser.add_argument(
         "-val", "--validation", action="store_true", help="Create validation set"
@@ -1837,6 +1934,11 @@ def main():
         action="store_true",
         help="Train MIL classifier with specified pooling method",
     )
+    parser.add_argument(
+        "--test_mil",
+        action="store_true",
+        help="Test MIL classifier on test dataset",
+    )
     # Check for unknown arguments
     known_args = {action.dest for action in parser._actions}
     input_args = {
@@ -1877,7 +1979,7 @@ def main():
             for lvl in [0, 1, 2, 3]:
                 extract_patches(level=lvl)
         else:
-            extract_patches(level=int(args.patch_level))
+            extract_patches(level=int(args.patch_level), test=args.test)
 
     # Extract features
     if args.extract_features:
@@ -1892,7 +1994,8 @@ def main():
                 )
                 return
         extract_features_per_wsi(
-            level=int(args.patch_level) if args.patch_level != "all" else 3, model_name=args.model_name
+            level=int(args.patch_level) if args.patch_level != "all" else 3,
+            model_name=args.model_name,
         )  # default to level 3 if all
 
     # Train model
@@ -1931,6 +2034,15 @@ def main():
             )
             return
         train_mil_classifier(feature_level=int(args.patch_level), pooling="attention")
+
+    # Test MIL classifier
+    if args.test_mil:
+        if not features_extracted(patch_level=args.patch_level):
+            print(
+                f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Features must be extracted before testing MIL classifier."
+            )
+            return
+        test_mil_classifier(feature_level=int(args.patch_level), pooling="attention")
 
     if args.prepare:
         prepare_data()

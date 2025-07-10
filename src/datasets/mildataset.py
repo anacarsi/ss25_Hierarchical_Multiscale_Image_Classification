@@ -4,6 +4,7 @@ import torch
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from sklearn.model_selection import train_test_split
+import glob
 
 
 class bcolors:
@@ -16,6 +17,7 @@ class bcolors:
     ENDC = "\033[0m"
     BOLD = "\033[1m"
     UNDERLINE = "\033[4m"
+
 
 class WSIMILDDataset(Dataset):
     def __init__(self, feature_base_dir):
@@ -80,6 +82,63 @@ class WSIMILDDataset(Dataset):
         label_tensor = torch.tensor(wsi_label, dtype=torch.long)
 
         return features_tensor, label_tensor
+
+
+class WSIMILTestDataset(Dataset):
+    def __init__(self, feature_dir):
+        self.feature_files = glob.glob(os.path.join(feature_dir, "*_features.pt"))
+        self.wsi_labels = self._get_wsi_labels()  # Map WSI name to its true label
+
+    def _get_wsi_labels(self):
+        """
+        A slide is 'tumor' if any tumor annotation exists, 'normal' otherwise.
+        """
+        labels = {}
+        test_annot_dir = os.path.join(
+            os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
+        )
+        test_img_dir = os.path.join(os.getcwd(), "data", "camelyon16", "test", "img")
+
+        for wsi_file in os.listdir(test_img_dir):
+            if wsi_file.endswith(".tif"):
+                prefix = wsi_file.replace(".tif", "")
+                xml_path = os.path.join(test_annot_dir, f"{prefix}.xml")
+
+                # If an XML exists, check for tumor annotations
+                is_tumor = False
+                if os.path.exists(xml_path):
+                    try:
+                        tree = ET.parse(xml_path)
+                        root = tree.getroot()
+                        for annotation in root.findall(".//Annotation"):
+                            for region in annotation.findall(".//Region"):
+                                if region.get("Type") == "Tumor":
+                                    is_tumor = True
+                                    break
+                            if is_tumor:
+                                break
+                    except Exception as e:
+                        print(
+                            f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Error parsing XML for {prefix}: {e}"
+                        )
+
+                # Assign label (1 for tumor, 0 for normal)
+                labels[prefix] = 1 if is_tumor else 0
+        return labels
+
+    def __len__(self):
+        return len(self.feature_files)
+
+    def __getitem__(self, idx):
+        feature_path = self.feature_files[idx]
+        wsi_name = os.path.basename(feature_path).replace("_features.pt", "")
+        features = torch.load(feature_path)
+        label = self.wsi_labels.get(wsi_name, -1)  # Get the label, -1 if not found
+
+        if label == -1:
+            raise ValueError(f"Label not found for WSI: {wsi_name}")
+
+        return features, torch.tensor(label, dtype=torch.long), wsi_name
 
 
 def get_mil_dataloaders(feature_base_dir, batch_size=1, test_ratio=0.2):
