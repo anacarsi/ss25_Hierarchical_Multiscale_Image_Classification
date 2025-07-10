@@ -40,7 +40,12 @@ def nt_xent_loss(z_i, z_j, temperature=0.5):
     sim_matrix = torch.matmul(z, z.T) / temperature  # (2N, 2N)
 
     mask = torch.eye(2 * N, dtype=torch.bool).to(device)
-    sim_matrix = sim_matrix.masked_fill(mask, -1e9)  # Use large neg instead of -inf
+    # Use a large negative value compatible with the current dtype
+    if sim_matrix.dtype == torch.float16:
+        neg_value = -65504.0  # min value for float16
+    else:
+        neg_value = -1e9
+    sim_matrix = sim_matrix.masked_fill(mask, neg_value)
 
     positives = torch.cat(
         [torch.diag(sim_matrix, N), torch.diag(sim_matrix, -N)]
