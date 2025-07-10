@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw
 #   Feature Analysis Pipeline
 # =============================
 
+
 def load_features_and_labels(feature_path, label_path):
     """Load extracted patch features and labels from .npy files."""
     features = np.load(feature_path)
@@ -23,13 +24,16 @@ def load_features_and_labels(feature_path, label_path):
     print(f"[INFO] Label distribution (0=normal, 1=tumor): {np.bincount(labels)}")
     return features, labels
 
+
 # -----------------------------
 def plot_pca(features, labels, out_path="pca_patch_features.png"):
     """Plot and save PCA visualization of patch features."""
     pca = PCA(n_components=2)
     features_pca = pca.fit_transform(features)
-    plt.figure(figsize=(8,6))
-    sns.scatterplot(x=features_pca[:,0], y=features_pca[:,1], hue=labels, palette='Set1')
+    plt.figure(figsize=(8, 6))
+    sns.scatterplot(
+        x=features_pca[:, 0], y=features_pca[:, 1], hue=labels, palette="Set1"
+    )
     plt.title("PCA: Patch Features (2D)")
     plt.xlabel("PC1")
     plt.ylabel("PC2")
@@ -39,13 +43,16 @@ def plot_pca(features, labels, out_path="pca_patch_features.png"):
     plt.close()
     print(f"[INFO] Saved PCA plot to {out_path}")
 
+
 # -----------------------------
 def plot_tsne(features, labels, out_path="tsne_patch_features.png"):
     """Plot and save t-SNE visualization of patch features."""
     tsne = TSNE(n_components=2, perplexity=30, max_iter=1000, random_state=42)
     features_tsne = tsne.fit_transform(features)
-    plt.figure(figsize=(8,6))
-    sns.scatterplot(x=features_tsne[:,0], y=features_tsne[:,1], hue=labels, palette='Set1')
+    plt.figure(figsize=(8, 6))
+    sns.scatterplot(
+        x=features_tsne[:, 0], y=features_tsne[:, 1], hue=labels, palette="Set1"
+    )
     plt.title("t-SNE: Patch Features (2D)")
     plt.xlabel("Dim 1")
     plt.ylabel("Dim 2")
@@ -55,18 +62,28 @@ def plot_tsne(features, labels, out_path="tsne_patch_features.png"):
     plt.close()
     print(f"[INFO] Saved t-SNE plot to {out_path}")
 
+
 # -----------------------------
 def plot_logreg_confusion(features, labels, out_path="logreg_confusion_matrix.png"):
     """Train logistic regression and save confusion matrix plot."""
-    X_train, X_test, y_train, y_test = train_test_split(features, labels, test_size=0.2, random_state=42)
+    X_train, X_test, y_train, y_test = train_test_split(
+        features, labels, test_size=0.2, random_state=42
+    )
     clf = LogisticRegression(max_iter=1000)
     clf.fit(X_train, y_train)
     y_pred = clf.predict(X_test)
     acc = accuracy_score(y_test, y_pred)
     cm = confusion_matrix(y_test, y_pred)
     print(f"[INFO] Logistic Regression Accuracy: {acc:.4f}")
-    plt.figure(figsize=(6,5))
-    sns.heatmap(cm, annot=True, fmt="d", cmap="Blues", xticklabels=["Normal", "Tumor"], yticklabels=["Normal", "Tumor"])
+    plt.figure(figsize=(6, 5))
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt="d",
+        cmap="Blues",
+        xticklabels=["Normal", "Tumor"],
+        yticklabels=["Normal", "Tumor"],
+    )
     plt.title("Confusion Matrix")
     plt.xlabel("Predicted")
     plt.ylabel("True")
@@ -74,6 +91,7 @@ def plot_logreg_confusion(features, labels, out_path="logreg_confusion_matrix.pn
     plt.savefig(out_path)
     plt.close()
     print(f"[INFO] Saved confusion matrix to {out_path}")
+
 
 # -----------------------------
 def find_unlabeled_patches(patch_dir):
@@ -96,8 +114,11 @@ def find_unlabeled_patches(patch_dir):
                         print(f"[WARN] Could not parse coordinates from {fname}: {e}")
     return unlabeled_patches
 
+
 # -----------------------------
-def overlay_unlabeled_on_wsi(slide_name, unlabeled_patches, wsi_dir, patch_size=224, max_patches=50):
+def overlay_unlabeled_on_wsi(
+    slide_name, unlabeled_patches, wsi_dir, patch_size=224, max_patches=50
+):
     """Overlay rectangles for unlabeled patches on the WSI and save the result."""
     wsi_path = os.path.join(wsi_dir, f"{slide_name}.tif")
     if not os.path.exists(wsi_path):
@@ -113,8 +134,8 @@ def overlay_unlabeled_on_wsi(slide_name, unlabeled_patches, wsi_dir, patch_size=
     for i, (x, y, fname) in enumerate(patches):
         if i >= max_patches:
             break
-        draw.rectangle([x, y, x+patch_size, y+patch_size], outline="red", width=3)
-    plt.figure(figsize=(10,10))
+        draw.rectangle([x, y, x + patch_size, y + patch_size], outline="red", width=3)
+    plt.figure(figsize=(10, 10))
     plt.imshow(wsi)
     plt.title(f"Unlabeled patches (red) on {slide_name}")
     plt.axis("off")
@@ -124,6 +145,7 @@ def overlay_unlabeled_on_wsi(slide_name, unlabeled_patches, wsi_dir, patch_size=
     plt.close()
     print(f"[INFO] Saved overlay: {outname}")
 
+
 # -----------------------------
 def main():
     """
@@ -131,7 +153,9 @@ def main():
     All plots are saved to disk.
     """
     # ---- Load Data ----
-    features, labels = load_features_and_labels("patch_features_3.npy", "patch_labels_3.npy")
+    features, labels = load_features_and_labels(
+        "patch_features_3.npy", "patch_labels_3.npy"
+    )
 
     # ---- Visualizations ----
     plot_pca(features, labels)
@@ -139,7 +163,9 @@ def main():
     plot_logreg_confusion(features, labels)
 
     # ---- Unlabeled Patch Overlay ----
-    patch_dir = os.path.join(os.getcwd(), "..", "data", "camelyon16", "patches", "level_3")
+    patch_dir = os.path.join(
+        os.getcwd(), "..", "data", "camelyon16", "patches", "level_3"
+    )
     wsi_dir = os.path.join(os.getcwd(), "..", "data", "camelyon16", "train", "img")
     unlabeled_patches = find_unlabeled_patches(patch_dir)
     slide_to_check = list(unlabeled_patches.keys())[0] if unlabeled_patches else None
@@ -147,6 +173,7 @@ def main():
         overlay_unlabeled_on_wsi(slide_to_check, unlabeled_patches, wsi_dir)
     else:
         print("[INFO] No unlabeled patches found.")
+
 
 if __name__ == "__main__":
     main()

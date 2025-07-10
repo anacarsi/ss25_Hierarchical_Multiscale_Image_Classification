@@ -4,21 +4,38 @@ from torch.utils.data import Dataset
 from PIL import Image
 from collections import defaultdict
 import random
-from collections import Counter # For counting class distributions
+from collections import Counter  # For counting class distributions
+
+
 class bcolors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    DEBUG = '\033[96m'
-    INFO = '\033[95m'      # pink
-    WARNING = '\033[93m'   # yellow
-    ERROR = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
+    HEADER = "\033[95m"
+    OKBLUE = "\033[94m"
+    DEBUG = "\033[96m"
+    INFO = "\033[95m"  # pink
+    WARNING = "\033[93m"  # yellow
+    ERROR = "\033[91m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+    UNDERLINE = "\033[4m"
+
+
 class PatchDataset(Dataset):
-    def __init__(self, root_dir, transform=None, tumor_transform=None, normal_transform=None, balanced=False, max_samples=None, slide_names=None):
-        self.tumor_transform = tumor_transform if tumor_transform is not None else transform
-        self.normal_transform = normal_transform if normal_transform is not None else transform
+    def __init__(
+        self,
+        root_dir,
+        transform=None,
+        tumor_transform=None,
+        normal_transform=None,
+        balanced=False,
+        max_samples=None,
+        slide_names=None,
+    ):
+        self.tumor_transform = (
+            tumor_transform if tumor_transform is not None else transform
+        )
+        self.normal_transform = (
+            normal_transform if normal_transform is not None else transform
+        )
         self.transform = transform  # for backward compatibility
         self.image_paths = []
         self.labels = []
@@ -38,13 +55,21 @@ class PatchDataset(Dataset):
             elif "_normal" in filename:
                 class_to_paths[0].append(path)
             else:
-                print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Could not determine label from filename: {filename}")
+                print(
+                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Could not determine label from filename: {filename}"
+                )
 
         # Balance the dataset
         if balanced:
-            min_count = min(len(paths) for paths in class_to_paths.values()) if class_to_paths else 0
+            min_count = (
+                min(len(paths) for paths in class_to_paths.values())
+                if class_to_paths
+                else 0
+            )
             if min_count == 0:
-                print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} No patches found for balancing.")
+                print(
+                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} No patches found for balancing."
+                )
             for label, paths in class_to_paths.items():
                 if max_samples:
                     count = min(min_count, max_samples)
@@ -69,13 +94,18 @@ class PatchDataset(Dataset):
             self.labels = list(self.labels)
 
         label_counts = Counter(self.labels)
-        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} PatchDataset initialized: {len(self.labels)} total patches.")
-        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Tumor patches: {label_counts.get(1, 0)} | Normal patches: {label_counts.get(0, 0)}")
-        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Label distribution: {dict(label_counts)}")
+        print(
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} PatchDataset initialized: {len(self.labels)} total patches."
+        )
+        print(
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Tumor patches: {label_counts.get(1, 0)} | Normal patches: {label_counts.get(0, 0)}"
+        )
+        print(
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Label distribution: {dict(label_counts)}"
+        )
 
     def __len__(self):
         return len(self.image_paths)
-
 
     def __getitem__(self, idx):
         img_path = self.image_paths[idx]
@@ -86,10 +116,11 @@ class PatchDataset(Dataset):
             image = self.tumor_transform(image)
         elif label == 0 and self.normal_transform:
             image = self.normal_transform(image)
-        elif self.transform: 
+        elif self.transform:
             image = self.transform(image)
         return image, label, img_path
 
     def get_class_counts(self):
         from collections import Counter
+
         return dict(Counter(self.labels))

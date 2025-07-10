@@ -4,6 +4,22 @@ import torch.nn.functional as F
 import numpy as np
 
 
+# Removed predict and uncertainty_estimation as they use np.exp and are for post-training analysis
+# For inference, we use model(bag)[0].softmax(dim=-1)
+class MILAttentionPooling(nn.Module):
+    def __init__(self, in_dim, attn_dim=128):
+        super().__init__()
+        self.attn_V = nn.Linear(in_dim, attn_dim)
+        self.attn_U = nn.Linear(attn_dim, 1)
+
+    def forward(self, x):
+        A = torch.tanh(self.attn_V(x))
+        A = self.attn_U(A)
+        A = torch.softmax(A, dim=0)
+        M = torch.sum(A * x, dim=0)
+        return M, A
+
+
 class MILAttentionPooling(nn.Module):
     """Attention-based pooling as in Ilse et al. (ABMIL)"""
 

@@ -26,4 +26,3 @@ def group_patches_by_slide(patch_root="data/camelyon16/patches/level_0"):
             shutil.move(src, dst)
 
     print(f"[INFO] Grouping complete.")
-

@@ -1,6 +1,7 @@
 from torch.utils.data import Dataset
 import torch
 
+
 class SimCLRDataset(torch.utils.data.Dataset):
     def __init__(self, base_dataset, transform):
         self.base_dataset = base_dataset
@@ -14,6 +15,3 @@ class SimCLRDataset(torch.utils.data.Dataset):
         img_i = self.transform(img)
         img_j = self.transform(img)
         return img_i, img_j
-
-
-

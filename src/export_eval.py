@@ -3,21 +3,24 @@ import numpy as np
 from PIL import Image, ImageDraw
 from lxml import etree
 import matplotlib.pyplot as plt
+
 """os.add_dll_directory(
     r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
 )"""
 from openslide import OpenSlide
 
+
 class bcolors:
-    HEADER = '\033[95m'
-    OKBLUE = '\033[94m'
-    DEBUG = '\033[96m'
-    INFO = '\033[92m'
-    WARNING = '\033[93m'
-    ERROR = '\033[91m'
-    ENDC = '\033[0m'
-    BOLD = '\033[1m'
-    UNDERLINE = '\033[4m'
+    HEADER = "\033[95m"
+    OKBLUE = "\033[94m"
+    DEBUG = "\033[96m"
+    INFO = "\033[92m"
+    WARNING = "\033[93m"
+    ERROR = "\033[91m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+    UNDERLINE = "\033[4m"
+
 
 def parse_xml_mask(xml_path, level_dims, slide, level):
     """
@@ -31,7 +34,9 @@ def parse_xml_mask(xml_path, level_dims, slide, level):
     try:
         tree = etree.parse(xml_path)
     except etree.XMLSyntaxError as e:
-        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Error parsing XML file {xml_path}: {e}")
+        print(
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Error parsing XML file {xml_path}: {e}"
+        )
         return None
 
     # Compute scaling factors based on actual dimensions
@@ -42,7 +47,9 @@ def parse_xml_mask(xml_path, level_dims, slide, level):
     mask = Image.new("L", level_dims, 0)
     draw = ImageDraw.Draw(mask)
 
-    for coordinates_node in tree.xpath("//Annotation/Coordinates | //Annotations/Annotation/Coordinates"):
+    for coordinates_node in tree.xpath(
+        "//Annotation/Coordinates | //Annotations/Annotation/Coordinates"
+    ):
         coords = []
         for coord_node in coordinates_node.findall("Coordinate"):
             try:
@@ -53,11 +60,14 @@ def parse_xml_mask(xml_path, level_dims, slide, level):
                 scaled_y = int(y * scale_y)
                 coords.append((scaled_x, scaled_y))
             except (ValueError, TypeError) as e:
-                print(f"{bcolors.WARNING}Warning: Could not parse coordinate (X,Y) from XML for {xml_path}: {e}{bcolors.ENDC}")
+                print(
+                    f"{bcolors.WARNING}Warning: Could not parse coordinate (X,Y) from XML for {xml_path}: {e}{bcolors.ENDC}"
+                )
                 continue
         if coords:
             draw.polygon(coords, outline=255, fill=255)
     return mask
+
 
 def visualize_and_save_wsi(wsi_name, output_dir, level=3, x=1000, y=1500):
     """
@@ -73,10 +83,16 @@ def visualize_and_save_wsi(wsi_name, output_dir, level=3, x=1000, y=1500):
     cwd = os.getcwd()
     wsi_dir = os.path.join(cwd, "..", "data", "camelyon16", "train", "img")
     annot_dir_train = os.path.join(cwd, "..", "data", "camelyon16", "train", "mask")
-    level_dir = os.path.join(cwd, "..", "data", "camelyon16", "patches", f"level_{level}")
+    level_dir = os.path.join(
+        cwd, "..", "data", "camelyon16", "patches", f"level_{level}"
+    )
 
     print("WSI directory exists:", wsi_dir, os.path.exists(wsi_dir))
-    print("Annotation directory (train) exists:", annot_dir_train, os.path.exists(annot_dir_train))
+    print(
+        "Annotation directory (train) exists:",
+        annot_dir_train,
+        os.path.exists(annot_dir_train),
+    )
     print("Level directory exists:", level_dir, os.path.exists(level_dir))
 
     xml_path = os.path.join(annot_dir_train, wsi_name.replace(".tif", ".xml"))
@@ -92,7 +108,9 @@ def visualize_and_save_wsi(wsi_name, output_dir, level=3, x=1000, y=1500):
     mask = parse_xml_mask(xml_path, level_dims, slide, level)
 
     # Save mask as PNG
-    mask_png_path = os.path.join(output_dir, f"{wsi_name.replace('.tif', '')}_mask_level{level}.png")
+    mask_png_path = os.path.join(
+        output_dir, f"{wsi_name.replace('.tif', '')}_mask_level{level}.png"
+    )
     mask.save(mask_png_path)
     print(f"Saved mask to {mask_png_path}")
 
@@ -100,19 +118,32 @@ def visualize_and_save_wsi(wsi_name, output_dir, level=3, x=1000, y=1500):
     plt.figure()
     plt.imshow(mask)
     plt.title("Parsed XML Mask")
-    mask_fig_path = os.path.join(output_dir, f"{wsi_name.replace('.tif', '')}_mask_level{level}_viz.png")
+    mask_fig_path = os.path.join(
+        output_dir, f"{wsi_name.replace('.tif', '')}_mask_level{level}_viz.png"
+    )
     plt.savefig(mask_fig_path)
     plt.close()
     print(f"Saved mask visualization to {mask_fig_path}")
 
     # Extract patch and mask patch
-    patch = slide.read_region((int(x * slide.level_downsamples[level]), int(y * slide.level_downsamples[level])), level, (224, 224)).convert("RGB")
-    patch_png_path = os.path.join(output_dir, f"{wsi_name.replace('.tif', '')}_patch_{x}_{y}_level{level}.png")
+    patch = slide.read_region(
+        (
+            int(x * slide.level_downsamples[level]),
+            int(y * slide.level_downsamples[level]),
+        ),
+        level,
+        (224, 224),
+    ).convert("RGB")
+    patch_png_path = os.path.join(
+        output_dir, f"{wsi_name.replace('.tif', '')}_patch_{x}_{y}_level{level}.png"
+    )
     patch.save(patch_png_path)
     print(f"Saved patch to {patch_png_path}")
 
     mask_patch = mask.crop((x, y, x + 224, y + 224))
-    mask_patch_png_path = os.path.join(output_dir, f"{wsi_name.replace('.tif', '')}_maskpatch_{x}_{y}_level{level}.png")
+    mask_patch_png_path = os.path.join(
+        output_dir, f"{wsi_name.replace('.tif', '')}_maskpatch_{x}_{y}_level{level}.png"
+    )
     mask_patch.save(mask_patch_png_path)
     print(f"Saved mask patch to {mask_patch_png_path}")
 
@@ -123,12 +154,16 @@ def visualize_and_save_wsi(wsi_name, output_dir, level=3, x=1000, y=1500):
     ax[1].imshow(mask_patch, cmap="gray")
     ax[1].set_title("Mask Patch")
     for a in ax:
-        a.axis('off')
+        a.axis("off")
     plt.tight_layout()
-    sidebyside_path = os.path.join(output_dir, f"{wsi_name.replace('.tif', '')}_patch_maskpatch_{x}_{y}_level{level}.png")
+    sidebyside_path = os.path.join(
+        output_dir,
+        f"{wsi_name.replace('.tif', '')}_patch_maskpatch_{x}_{y}_level{level}.png",
+    )
     plt.savefig(sidebyside_path)
     plt.close()
     print(f"Saved patch/mask side-by-side to {sidebyside_path}")
+
 
 if __name__ == "__main__":
     visualize_and_save_wsi(
@@ -136,6 +171,5 @@ if __name__ == "__main__":
         output_dir="wsi_visualizations",
         level=3,
         x=1000,
-        y=1500
+        y=1500,
     )
-
