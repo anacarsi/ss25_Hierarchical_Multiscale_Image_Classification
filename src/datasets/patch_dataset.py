@@ -40,10 +40,11 @@ class PatchDataset(Dataset):
         self.image_paths = []
         self.labels = []
         self.label_map = {"_normal": 0, "_tumor": 1}
-
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Initializing PatchDataset from {root_dir}")
         # Collect samples by class
         class_to_paths = defaultdict(list)
         for path in glob.glob(os.path.join(root_dir, "**", "*.png"), recursive=True):
+            print(f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Found path: {path}")
             if slide_names is not None:
                 rel_path = os.path.relpath(path, root_dir)
                 slide_dir = rel_path.split(os.sep)[0]

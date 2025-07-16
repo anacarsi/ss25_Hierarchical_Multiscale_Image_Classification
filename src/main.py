@@ -43,7 +43,12 @@ import zipfile
 import pandas as pd
 from train import train_resnet
 from utils.structure import get_latest_mil_model_path
-
+""""
+os.add_dll_directory(
+    r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
+)
+"""
+import openslide
 
 class bcolors:
     HEADER = "\033[95m"
@@ -146,7 +151,7 @@ def download_dataset(remote=False):
     - remote (bool): If True, download all files; if False, download only a subset for testing.
     """
     camelyon_dir = os.path.join(os.getcwd(), "data", "camelyon16")
-
+    
     # Define the target directories
     train_img_dir = os.path.join(camelyon_dir, "train", "img")
     val_img_dir = os.path.join(camelyon_dir, "val", "img")
@@ -164,7 +169,7 @@ def download_dataset(remote=False):
     }
 
     # Apply limits for non-remote mode
-    limits = {"train_normal": 50, "train_tumor": 110, "test_images": 30}
+    limits = {"train_normal": 39, "train_tumor": 110, "test_images": 30}
 
     for file_type, target_dir in download_map.items():
         files_to_download = CAMELYON16_FILES[file_type]
@@ -274,7 +279,7 @@ def download_all_tumor_extract_patches(download=False):
             download_file(url, destination_path)
 
     # Extract only tumor patches from downloaded tumor images
-    extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=True)
+    extract_patches(patch_size=224, level=3, stride=None, pad=True)
 
 
 def parse_xml_mask(xml_path, level_dims, slide):
@@ -1476,7 +1481,7 @@ def main():
             for lvl in [0, 1, 2, 3]:
                 extract_patches(level=lvl)
         else:
-            extract_patches(level=int(args.patch_level), test=args.test_patch)
+            extract_patches(level=int(args.patch_level))
 
     # Extract features
     if args.extract_features:
@@ -1521,7 +1526,7 @@ def main():
                 f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patches must be extracted before training."
             )
             return
-        train_resnet_classifier_strategic(
+        train_resnet_classifier(
             level=int(args.patch_level), strategy=args.strategy
         )
 
