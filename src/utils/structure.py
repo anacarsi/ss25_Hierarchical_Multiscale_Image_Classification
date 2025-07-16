@@ -1,5 +1,18 @@
 import os
 import shutil
+import glob
+
+
+class bcolors:
+    HEADER = "\033[95m"
+    OKBLUE = "\033[94m"
+    DEBUG = "\033[96m"
+    INFO = "\033[95m"  # pink
+    WARNING = "\033[93m"  # yellow
+    ERROR = "\033[91m"
+    ENDC = "\033[0m"
+    BOLD = "\033[1m"
+    UNDERLINE = "\033[4m"
 
 
 def group_patches_by_slide(patch_root="data/camelyon16/patches/level_0"):
@@ -26,3 +39,20 @@ def group_patches_by_slide(patch_root="data/camelyon16/patches/level_0"):
             shutil.move(src, dst)
 
     print(f"[INFO] Grouping complete.")
+
+
+def get_latest_mil_model_path():
+    """
+    Returns the path to the most recently created model file in models_dir
+    whose filename starts with 'mil' and ends with '.pth'.
+    """
+    pattern = os.path.join(os.getcwd(), "src", "models", "mil*.pth")
+    model_files = glob.glob(pattern)
+    if not model_files:
+        print(
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No MIL model files found in {pattern}."
+        )
+        return None
+    latest_model = max(model_files, key=os.path.getctime)
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Latest MIL model found: {latest_model}")
+    return latest_model

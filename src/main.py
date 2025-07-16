@@ -7,37 +7,23 @@ from tqdm import tqdm
 from torch.utils.data import Subset
 import torchvision.transforms as T
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-from datetime import datetime
 from sklearn.metrics import roc_auc_score
 import copy
 import torch
 import torch.nn as nn
 from torch.optim import Adam
 import numpy as np
-from sklearn.metrics import confusion_matrix
 import shutil
 from torch.utils.data import DataLoader
 from PIL import Image, ImageDraw, ImageOps
 from lxml import etree
-from torchvision import transforms
 from sklearn.model_selection import train_test_split
-from sklearn.manifold import TSNE
-from sklearn.decomposition import PCA
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import accuracy_score, confusion_matrix
-from sklearn.model_selection import train_test_split
-
-""""
-os.add_dll_directory(
-    r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
-)
-"""
-import openslide
+from sklearn.metrics import accuracy_score
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from models.resnet import (
-    ResNet18Classifier,
-    ResNet18FeatureExtractor,
+    ResNetClassifier,
+    ResNetFeatureExtractor,
     ResNet18ClassifierSIMCLR,
 )
 from datasets.patch_dataset import PatchDataset
@@ -55,6 +41,8 @@ from sklearn.metrics import f1_score, precision_score, recall_score
 from models.simclr import pretrain_simclr
 import zipfile
 import pandas as pd
+from train import train_resnet
+from utils.structure import get_latest_mil_model_path
 
 
 class bcolors:
@@ -109,7 +97,14 @@ DOWNLOADED_FILES = {
 
 def download_file(url, destination_path):
     """
-    Downloads a file from a URL to a destination path with a progress bar.
+    Download a file from a URL to a destination path with a progress bar.
+
+    Parameters:
+    - url (str): The URL to download from.
+    - destination_path (str): The local file path to save the downloaded file.
+
+    Returns:
+    - bool: True if download succeeded, False otherwise.
     """
     try:
         print(
@@ -145,10 +140,10 @@ def download_file(url, destination_path):
 
 def download_dataset(remote=False):
     """
-    Downloads the CAMELYON16 dataset, including training, testing, and mask files.
+    Download the CAMELYON16 dataset, including training, testing, and mask files.
 
     Parameters:
-    - remote: bool, if True, download all files; if False, download only one file for testing.
+    - remote (bool): If True, download all files; if False, download only a subset for testing.
     """
     camelyon_dir = os.path.join(os.getcwd(), "data", "camelyon16")
 
@@ -214,51 +209,16 @@ def download_dataset(remote=False):
             url = BASE_URL + remote_file_path
             download_file(url, destination_path)
 
-
-def move_files():
-    base_dir = os.path.join(os.getcwd(), "data", "camelyon16", "patches", "level_3")
-
-    # Iterate through each subfolder in level_3
-    for folder_name in os.listdir(base_dir):
-        folder_path = os.path.join(base_dir, folder_name)
-
-        # Only process directories
-        if not os.path.isdir(folder_path):
-            continue
-
-        tumor_subdir = os.path.join(folder_path, "tumor")
-
-        if os.path.isdir(tumor_subdir):
-            print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Processing {tumor_subdir}...")
-            # Move all .png files to the parent directory
-            for file_name in os.listdir(tumor_subdir):
-                if file_name.endswith(".png"):
-                    src_file = os.path.join(tumor_subdir, file_name)
-                    dst_file = os.path.join(folder_path, file_name)
-                    shutil.move(src_file, dst_file)
-
-            # Remove the now-empty 'tumor' subfolder
-            try:
-                os.rmdir(tumor_subdir)
-                print(
-                    f"{bcolors.INFO}[INFO]{bcolors.ENDC} Deleted empty directory: {tumor_subdir}"
-                )
-            except OSError as e:
-                print(
-                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Could not delete {tumor_subdir}: {e}"
-                )
-        else:
-            print(
-                f"{bcolors.INFO}[INFO]{bcolors.ENDC} No 'tumor' subdirectory in {folder_path}, skipping."
-            )
+    create_validation_set()
 
 
 def extract_zip(zip_path, extract_to):
     """
-    Extract masks to annotations.
+    Extract a zip file containing masks to the specified annotation directory.
+
     Parameters:
-    - zip_path: str, path to the zip file to extract.
-    - extract_to: str, directory to extract the contents to.
+    - zip_path (str): Path to the zip file to extract.
+    - extract_to (str): Directory to extract the contents to.
     """
     # Check if the path extract_to exists. If yes, check contains all elements from tumor_001.xml to tumor_050.xml.
     # If it does not contain them, delete the directory and extract again. If exists and contains all elements, skip extraction.
@@ -286,6 +246,12 @@ def extract_zip(zip_path, extract_to):
 
 
 def download_all_tumor_extract_patches(download=False):
+    """
+    Download all tumor images and extract tumor patches from them.
+
+    Parameters:
+    - download (bool): If True, download all tumor images before extracting patches.
+    """
     print(
         f"{bcolors.HEADER}{bcolors.BOLD}[HEADER]{bcolors.ENDC} Download all tumor images and extract tumor patches"
     )
@@ -311,164 +277,17 @@ def download_all_tumor_extract_patches(download=False):
     extract_patches(patch_size=224, level=3, stride=None, pad=True, only_tumor=True)
 
 
-def extract_patches_per_slide(
-    slide_path="tumor_109",
-    patch_size=224,
-    level=3,
-    stride=None,
-    pad=True,
-    only_tumor=False,
-):
-    """
-    Extract patches from a single slide directory.
-    Parameters:
-    - slide_dir: str, path to the slide directory containing patches.
-    - patch_size: int, size of the patches to extract.
-    - level: int, level of the WSI to extract patches from.
-    - stride: int, stride for patch extraction.
-    - pad: bool, if True, pad the image to cover all regions.
-    - only_tumor: bool, if True, only extract tumor patches from tumor images.
-    """
-    stride = stride or patch_size
-    patch_sizes = {0: 1792, 1: 896, 2: 448, 3: 224}
-    patch_size = patch_sizes.get(level, 224)
-    slide_path = os.path.join(
-        os.getcwd(), "data", "camelyon16", "train", "img", slide_path + ".tif"
-    )
-
-    prefix = os.path.splitext(os.path.basename(slide_path))[0]
-    wsi_dir = os.path.dirname(slide_path)
-    # Guess annotation directory based on slide location
-    if "test" in wsi_dir:
-        annot_dir = os.path.join(
-            os.path.dirname(os.path.dirname(wsi_dir)), "mask", "annotations"
-        )
-    else:
-        annot_dir = os.path.join(
-            os.path.dirname(os.path.dirname(wsi_dir)), "mask", "annotations"
-        )
-    xml_name = prefix + ".xml"
-    xml_path = os.path.join(annot_dir, xml_name)
-
-    level_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
-    )
-    os.makedirs(level_dir, exist_ok=True)
-    patch_save_dir = os.path.join(level_dir, prefix)
-    # Only skip extraction if the directory exists, is not empty, and contains both _normal.png and _tumor.png files
-    if any(f.endswith("_normal.png") for f in os.listdir(patch_save_dir)):
-        print(f"DEBUG: we are on patch {slide_path} with normal")
-    else:
-        print(
-            f"DEBUG: we are on patch {slide_path} without normal and we should check this"
-        )
-    if (
-        os.path.exists(patch_save_dir)
-        and len(os.listdir(patch_save_dir)) > 0
-        and any(f.endswith("_normal.png") for f in os.listdir(patch_save_dir))
-        and any(f.endswith("_tumor.png") for f in os.listdir(patch_save_dir))
-    ):
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patches for {slide_path} already extracted, skipping."
-        )
-        return
-    os.makedirs(patch_save_dir, exist_ok=True)
-
-    print(
-        f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Processing file: {slide_path} with XML: {xml_path}"
-    )
-    try:
-        slide = openslide.OpenSlide(slide_path)
-    except Exception as e:
-        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Could not open {slide_path}: {e}")
-        return
-    width, height = slide.level_dimensions[level]
-    downsample = slide.level_downsamples[level]
-
-    # Calculate padded size if needed
-    if pad:
-        pad_w = (patch_size - width % patch_size) % patch_size
-        pad_h = (patch_size - height % patch_size) % patch_size
-        padded_width = width + pad_w
-        padded_height = height + pad_h
-    else:
-        padded_width = width
-        padded_height = height
-
-    # Load and render XML mask
-    mask = None
-    if os.path.exists(xml_path):
-        try:
-            mask = parse_xml_mask(xml_path, (width, height), slide, level)
-            if pad and (pad_w > 0 or pad_h > 0):
-                mask = ImageOps.expand(mask, (0, 0, pad_w, pad_h), fill=0)
-        except Exception as e:
-            print(
-                f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Failed to parse XML for {slide_path}: {e}"
-            )
-    else:
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} No annotation found for {slide_path}, treating as normal."
-        )
-
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Processing {slide_path} at level {level} (size: {width}x{height}, padded: {padded_width}x{padded_height})"
-    )
-
-    patch_count = 0
-    for x in range(0, padded_width, stride):
-        for y in range(0, padded_height, stride):
-            if x >= width or y >= height:
-                continue
-
-            patch_w = min(patch_size, width - x)
-            patch_h = min(patch_size, height - y)
-            if patch_w <= 0 or patch_h <= 0:
-                continue
-
-            region = slide.read_region(
-                (int(x * downsample), int(y * downsample)),
-                level,
-                (patch_w, patch_h),
-            ).convert("RGB")
-
-            if patch_w < patch_size or patch_h < patch_size:
-                padded_region = Image.new(
-                    "RGB", (patch_size, patch_size), (255, 255, 255)
-                )
-                padded_region.paste(region, (0, 0))
-                region = padded_region
-
-            label = "normal"
-            if mask:
-                mask_patch = mask.crop((x, y, x + patch_size, y + patch_size))
-                if np.any(np.array(mask_patch) > 0):
-                    label = "tumor"
-
-            patch_array = np.array(region)
-            if np.mean(patch_array) > 240:  # too white (empty tissue)
-                continue
-
-            if (only_tumor and label == "tumor") or not only_tumor:
-                patch_save_dir_labeled = os.path.join(level_dir, prefix, label)
-                os.makedirs(patch_save_dir_labeled, exist_ok=True)
-                patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
-                region.save(os.path.join(patch_save_dir_labeled, patch_name))
-                patch_count += 1
-
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patch extraction complete for {slide_path} at level {level}. Total patches: {patch_count}"
-    )
-
-
 def parse_xml_mask(xml_path, level_dims, slide):
     """
-    Convert XML annotation to binary mask.
+    Convert an XML annotation file to a binary mask for a WSI at a given level.
+
     Parameters:
-    - xml_path: str, path to the XML file containing annotations.
-    - level_dims: tuple, dimensions of the WSI at the specified level (width, height).
-    - slide: OpenSlide object for the WSI.
-    - level: int, target level for mask.
+    - xml_path (str): Path to the XML file containing annotations.
+    - level_dims (tuple): Dimensions of the WSI at the specified level (width, height).
+    - slide (OpenSlide): OpenSlide object for the WSI.
+
+    Returns:
+    - PIL.Image: Binary mask image.
     """
     try:
         tree = etree.parse(xml_path)
@@ -508,21 +327,29 @@ def parse_xml_mask(xml_path, level_dims, slide):
     return mask
 
 
-def get_dataloaders(patch_dir, test_ratio=0.2, batch_size=BATCH_SIZE, balanced=False):
-    slide_dirs = [
-        d for d in os.listdir(patch_dir) if os.path.isdir(os.path.join(patch_dir, d))
+def get_dataloaders(patch_dir, batch_size=BATCH_SIZE, balanced=False):
+    """
+    Create PyTorch DataLoaders for training and validation patch datasets.
+
+    Parameters:
+    - patch_dir (str): Directory containing patch data.
+    - batch_size (int): Batch size for DataLoader.
+    - balanced (bool): Whether to balance the dataset by limiting samples per class.
+
+    Returns:
+    - tuple: (train_loader, val_loader, train_dataset, val_dataset)
+    """
+    train_dir = os.path.join(patch_dir, "train")
+    val_dir = os.path.join(patch_dir, "val")
+    train_slides = [
+        d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))
+    ]
+    val_slides = [
+        d for d in os.listdir(val_dir) if os.path.isdir(os.path.join(val_dir, d))
     ]
     print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Found {len(slide_dirs)} slides in {patch_dir}."
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Found {len(train_slides) + len(val_slides)} slides in {patch_dir}."
     )
-
-    train_slides, val_slides = train_test_split(
-        slide_dirs, test_size=test_ratio, random_state=42
-    )
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Train slides: {len(train_slides)}, Validation slides: {len(val_slides)}"
-    )
-
     # Data augmentation for classification task
     train_transform = T.Compose(
         [
@@ -598,462 +425,120 @@ def get_dataloaders(patch_dir, test_ratio=0.2, batch_size=BATCH_SIZE, balanced=F
     return train_loader, val_loader, train_dataset, val_dataset
 
 
-def train_resnet_classifier(level=3):
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training ResNet18 classifier without SimCLR pretraining..."
-    )
+def train_resnet_classifier(
+    level=3,
+    strategy="baseline",  # options: baseline, balanced, weighted_loss, self_supervised
+    phase1_epochs=10,
+    phase2_epochs=20,
+):
+    """
+    Train a ResNet18 classifier on extracted patches with optional strategy.
+
+    Parameters:
+    - level (int): WSI level for patch extraction.
+    - strategy (str): Training strategy ('baseline', 'balanced', 'weighted_loss', 'self_supervised').
+    - phase1_epochs (int): Number of epochs for phase 1 (self-supervised only).
+    - phase2_epochs (int): Number of epochs for phase 2 (self-supervised only).
+    """
     patch_dir = os.path.join(
         os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
     )
+    pretrained_simclr_path = os.path.join(
+        os.getcwd(), "src", "models", f"simclr_encoder_best_level{level}.pth"
+    )
+    balanced = strategy == "balanced"
 
     train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(
-        patch_dir, test_ratio=0.2, batch_size=BATCH_SIZE
+        patch_dir, batch_size=BATCH_SIZE, balanced=balanced
     )
     if train_loader is None:
         return
 
-    model = ResNet18Classifier().to(device)
+    base_model_path = f"src/models/resnet18_{strategy}_level{level}"
 
-    # Weighted loss for class imbalance
     all_labels = np.array(train_dataset.labels)
     unique_labels, counts = np.unique(all_labels, return_counts=True)
-    class_sample_count = np.array(
+    sample_counts = np.array(
         [
             counts[np.where(unique_labels == t)[0][0]] if t in unique_labels else 1
             for t in [0, 1]
         ]
     )
-    weight = 1.0 / class_sample_count
-    weight = weight / np.min(weight)
-    class_weights = torch.FloatTensor(weight).to(device)
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
-
-    optimizer = Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
-    scheduler = ReduceLROnPlateau(
-        optimizer, mode="max", factor=0.1, patience=5, verbose=True, threshold=0.001
-    )
-
-    num_epochs = 30
-    best_val_acc = 0.0
-    epochs_no_improve = 0
-    early_stop_patience = 10
-
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss, correct = 0, 0
-        scaler = torch.cuda.amp.GradScaler()
-        for imgs, labels, _ in tqdm(train_loader, desc=f"Epoch {epoch+1} Training"):
-            imgs, labels = imgs.to(device), labels.to(device)
-            optimizer.zero_grad()
-            with torch.cuda.amp.autocast():
-                outputs = model(imgs)
-                loss = criterion(outputs, labels)
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            total_loss += loss.item()
-            preds = outputs.argmax(dim=1)
-            correct += (preds == labels).sum().item()
-        train_acc = correct / len(train_dataset)
-
-        # Validation loop
-        model.eval()
-        val_correct = 0
-        with torch.no_grad():
-            for imgs, labels, _ in tqdm(val_loader, desc=f"Epoch {epoch+1} Validation"):
-                imgs, labels = imgs.to(device), labels.to(device)
-                outputs = model(imgs)
-                preds = outputs.argmax(1)
-                val_correct += (preds == labels).sum().item()
-
-        val_acc = val_correct / len(val_loader.dataset)
-        print(
-            f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}"
-        )
-
-        scheduler.step(val_acc)
-
-        # Early stopping
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            epochs_no_improve = 0
-            now = datetime.now().strftime("%Y%m%d%H%M%S")
-            best_model_path = (
-                f"src/models/resnet18_patch_classifier_best_level{level}_{now}.pth"
-            )
-            torch.save(model.state_dict(), best_model_path)
-            print(
-                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Best validation accuracy achieved. Model saved to {best_model_path}"
-            )
-        else:
-            epochs_no_improve += 1
-            if epochs_no_improve >= early_stop_patience:
-                print(
-                    f"{bcolors.INFO}[INFO]{bcolors.ENDC} Early stopping triggered at epoch {epoch+1}."
-                )
-                break
-
-        # Save checkpoint every 10 epochs
-        if (epoch + 1) % 10 == 0:
-            now = datetime.now().strftime("%Y%m%d%H%M%S")
-            checkpoint_path = f"src/models/resnet18_patch_classifier_epoch{epoch+1}_level{level}_{now}.pth"
-            torch.save(model.state_dict(), checkpoint_path)
-            print(
-                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checkpoint saved: {checkpoint_path}"
-            )
-
-    now = datetime.now().strftime("%Y%m%d%H%M%S")
-    final_model_path = (
-        f"src/models/resnet18_patch_classifier_final_level{level}_{now}.pth"
-    )
-    torch.save(model.state_dict(), final_model_path)
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Final model saved to {final_model_path}."
-    )
-
-
-def train_resnet_classifier_strategic(
-    level=3, strategy="self_supervised", phase1_epochs=10, phase2_epochs=20
-):
-    assert strategy in {
-        "balanced",
-        "weighted_loss",
-        "self_supervised",
-    }, "Invalid strategy option"
-
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training ResNet18 classifier using strategy: {strategy}..."
-    )
-    patch_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
-    )
-    model_dir = os.path.join(
-        os.getcwd(), "src", "models", f"simclr_encoder_best_level{level}.pth"
-    )
-
-    balanced_flag = strategy == "balanced"
-    train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(
-        patch_dir, test_ratio=0.2, batch_size=BATCH_SIZE, balanced=balanced_flag
-    )
-    if train_loader is None:
-        return
-
-    # Compute class weights
-    unique_labels_train, counts_train = np.unique(
-        train_dataset.labels, return_counts=True
-    )
-    class_sample_count_train = np.array(
-        [
-            (
-                counts_train[np.where(unique_labels_train == t)[0][0]]
-                if t in unique_labels_train
-                else 1
-            )
-            for t in [0, 1]
-        ]
-    )
-    weights = 1.0 / class_sample_count_train
-    weights = weights / np.min(weights)
-    class_weights_tensor = torch.FloatTensor(weights).to(device)
-
-    model = None
-    criterion = None
+    class_weights = 1.0 / sample_counts
+    class_weights = class_weights / np.min(class_weights)
+    weight_tensor = torch.FloatTensor(class_weights).to(device)
 
     if strategy == "self_supervised":
-        if not os.path.exists(model_dir):
-            print(
-                f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} SimCLR pre-trained weights not found at {model_dir}. Pretraining SimCLR encoder..."
-            )
+        if not os.path.exists(pretrained_simclr_path):
+            print("Pretraining SimCLR encoder...")
             pretrain_simclr(patch_dir, epochs=200, level=level)
-            if not os.path.exists(model_dir):
-                print(
-                    f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} SimCLR pretraining finished, but best model was not saved or found. Please check logs."
-                )
-                return
 
-        # Phase 1: Train classification head with frozen encoder
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Phase 1: Training classification head with frozen encoder."
-        )
+        # Phase 1
         model = ResNet18ClassifierSIMCLR(
-            pretrained_weights_path=model_dir, freeze_encoder=True
+            pretrained_weights_path=pretrained_simclr_path, freeze_encoder=True
         ).to(device)
-        criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
+        criterion = nn.CrossEntropyLoss(weight=weight_tensor)
         optimizer = Adam(model.parameters(), lr=5e-4, weight_decay=1e-5)
         scheduler = ReduceLROnPlateau(
-            optimizer, mode="max", factor=0.1, patience=3, verbose=True, threshold=0.001
+            optimizer, mode="max", factor=0.1, patience=3, verbose=True
+        )
+        train_resnet(
+            model,
+            train_loader,
+            val_loader,
+            train_dataset,
+            val_dataset,
+            criterion,
+            optimizer,
+            scheduler,
+            phase1_epochs,
+            base_model_path + "_phase1",
         )
 
-        best_val_acc = 0.0
-        epochs_no_improve = 0
-        early_stop_patience = 5
-
-        for epoch in range(phase1_epochs):
-            model.train()
-            total_loss, correct = 0, 0
-            scaler = torch.cuda.amp.GradScaler()
-            for imgs, labels, _ in tqdm(
-                train_loader, desc=f"Phase 1 Epoch {epoch+1} Training"
-            ):
-                imgs, labels = imgs.to(device), labels.to(device)
-                optimizer.zero_grad()
-                with torch.cuda.amp.autocast():
-                    outputs = model(imgs)
-                    loss = criterion(outputs, labels)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-                total_loss += loss.item()
-                correct += (outputs.argmax(1) == labels).sum().item()
-            train_acc = correct / len(train_dataset)
-
-            model.eval()
-            val_correct = 0
-            with torch.no_grad():
-                for imgs, labels, _ in tqdm(
-                    val_loader, desc=f"Phase 1 Epoch {epoch+1} Validation"
-                ):
-                    imgs, labels = imgs.to(device), labels.to(device)
-                    outputs = model(imgs)
-                    preds = outputs.argmax(1)
-                    val_correct += (preds == labels).sum().item()
-            val_acc = val_correct / len(val_loader.dataset)
-            print(
-                f"Phase 1 Epoch {epoch+1}/{phase1_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}"
-            )
-
-            scheduler.step(val_acc)
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                epochs_no_improve = 0
-                now = datetime.now().strftime("%Y%m%d%H%M%S")
-                temp_model_save_path = f"src/models/resnet18_patch_classifier_simclr_phase1_best_level{level}_{now}.pth"
-                torch.save(model.state_dict(), temp_model_save_path)
-            else:
-                epochs_no_improve += 1
-                if epochs_no_improve >= early_stop_patience:
-                    print(
-                        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Early stopping for Phase 1 triggered."
-                    )
-                    break
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Phase 1 complete. Loading best Phase 1 model for Phase 2."
-        )
-        # Load the best model from Phase 1 to continue to Phase 2
-        model.load_state_dict(torch.load(temp_model_save_path, map_location=device))
-        best_val_acc = 0.0
-        epochs_no_improve = 0
-
-        # Phase 2: Fine-tune entire model with unfrozen encoder
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Phase 2: Fine-tuning entire model with unfrozen encoder."
-        )
+        # Phase 2
         model = ResNet18ClassifierSIMCLR(
-            pretrained_weights_path=temp_model_save_path, freeze_encoder=False
+            pretrained_weights_path=base_model_path + "_phase1_best.pth",
+            freeze_encoder=False,
         ).to(device)
         optimizer = Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
         scheduler = ReduceLROnPlateau(
+            optimizer, mode="max", factor=0.1, patience=5, verbose=True
+        )
+        train_resnet(
+            model,
+            train_loader,
+            val_loader,
+            train_dataset,
+            val_dataset,
+            criterion,
             optimizer,
-            mode="max",
-            factor=0.1,
-            patience=5,
-            verbose=True,
-            threshold=0.001,
-            min_lr=1e-7,
+            scheduler,
+            phase2_epochs,
+            base_model_path,
         )
 
-        for epoch in range(phase2_epochs):
-            model.train()
-            total_loss, correct = 0, 0
-            scaler = torch.cuda.amp.GradScaler()
-            for imgs, labels, _ in tqdm(
-                train_loader, desc=f"Phase 2 Epoch {epoch+1} Training"
-            ):
-                imgs, labels = imgs.to(device), labels.to(device)
-                optimizer.zero_grad()
-                with torch.cuda.amp.autocast():
-                    outputs = model(imgs)
-                    loss = criterion(outputs, labels)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-                total_loss += loss.item()
-                correct += (outputs.argmax(1) == labels).sum().item()
-            train_acc = correct / len(train_dataset)
-
-            model.eval()
-            val_correct = 0
-            with torch.no_grad():
-                for imgs, labels, _ in tqdm(
-                    val_loader, desc=f"Phase 2 Epoch {epoch+1} Validation"
-                ):
-                    imgs, labels = imgs.to(device), labels.to(device)
-                    outputs = model(imgs)
-                    preds = outputs.argmax(1)
-                    val_correct += (preds == labels).sum().item()
-            val_acc = val_correct / len(val_loader.dataset)
-            print(
-                f"Phase 2 Epoch {epoch+1}/{phase2_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}"
-            )
-
-            scheduler.step(val_acc)
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                epochs_no_improve = 0
-                now = datetime.now().strftime("%Y%m%d%H%M%S")
-                best_model_path = f"src/models/resnet18_patch_classifier_simclr_best_level{level}_{now}.pth"
-                torch.save(model.state_dict(), best_model_path)
-                print(
-                    f"{bcolors.INFO}[INFO]{bcolors.ENDC} Best validation accuracy achieved (Phase 2). Model saved to {best_model_path}"
-                )
-            else:
-                epochs_no_improve += 1
-                if epochs_no_improve >= early_stop_patience:
-                    print(
-                        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Early stopping for Phase 2 triggered."
-                    )
-                    break
-
-    elif strategy == "balanced":
-        model = ResNet18Classifier().to(device)
-        if torch.cuda.device_count() > 1:
-            model = nn.DataParallel(model)
-        criterion = nn.CrossEntropyLoss()
-        optimizer = Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
-        scheduler = ReduceLROnPlateau(
-            optimizer, mode="max", factor=0.1, patience=5, verbose=True, threshold=0.001
-        )
-        num_epochs = 30
-        best_val_acc = 0.0
-        epochs_no_improve = 0
-        early_stop_patience = 10
-
-        for epoch in range(num_epochs):
-            model.train()
-            total_loss, correct = 0, 0
-            scaler = torch.cuda.amp.GradScaler()
-            for imgs, labels, _ in tqdm(train_loader, desc=f"Epoch {epoch+1} Training"):
-                imgs, labels = imgs.to(device), labels.to(device)
-                optimizer.zero_grad()
-                with torch.cuda.amp.autocast():
-                    outputs = model(imgs)
-                    loss = criterion(outputs, labels)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-                total_loss += loss.item()
-                correct += (outputs.argmax(1) == labels).sum().item()
-            train_acc = correct / len(train_dataset)
-
-            model.eval()
-            val_correct = 0
-            with torch.no_grad():
-                for imgs, labels, _ in tqdm(
-                    val_loader, desc=f"Epoch {epoch+1} Validation"
-                ):
-                    imgs, labels = imgs.to(device), labels.to(device)
-                    outputs = model(imgs)
-                    preds = outputs.argmax(1)
-                    val_correct += (preds == labels).sum().item()
-            val_acc = val_correct / len(val_loader.dataset)
-            print(
-                f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}"
-            )
-
-            scheduler.step(val_acc)
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                epochs_no_improve = 0
-                now = datetime.now().strftime("%Y%m%d%H%M%S")
-                best_model_path = f"src/models/resnet18_patch_classifier_balanced_best_level{level}_{now}.pth"
-                torch.save(model.state_dict(), best_model_path)
-                print(
-                    f"{bcolors.INFO}[INFO]{bcolors.ENDC} Best validation accuracy achieved. Model saved to {best_model_path}"
-                )
-            else:
-                epochs_no_improve += 1
-                if epochs_no_improve >= early_stop_patience:
-                    print(
-                        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Early stopping triggered at epoch {epoch+1}."
-                    )
-                    break
-
-    elif strategy == "weighted_loss":
-        model = ResNet18Classifier().to(device)
-        if torch.cuda.device_count() > 1:
-            model = nn.DataParallel(model)
-        criterion = nn.CrossEntropyLoss(weight=class_weights_tensor)
-        optimizer = Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
-        scheduler = ReduceLROnPlateau(
-            optimizer, mode="max", factor=0.1, patience=5, verbose=True, threshold=0.001
-        )
-        num_epochs = 30
-        best_val_acc = 0.0
-        epochs_no_improve = 0
-        early_stop_patience = 10
-
-        for epoch in range(num_epochs):
-            model.train()
-            total_loss, correct = 0, 0
-            scaler = torch.cuda.amp.GradScaler()
-            for imgs, labels, _ in tqdm(train_loader, desc=f"Epoch {epoch+1} Training"):
-                imgs, labels = imgs.to(device), labels.to(device)
-                optimizer.zero_grad()
-                with torch.cuda.amp.autocast():
-                    outputs = model(imgs)
-                    loss = criterion(outputs, labels)
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-                total_loss += loss.item()
-                correct += (outputs.argmax(1) == labels).sum().item()
-            train_acc = correct / len(train_dataset)
-
-            model.eval()
-            val_correct = 0
-            with torch.no_grad():
-                for imgs, labels, _ in tqdm(
-                    val_loader, desc=f"Epoch {epoch+1} Validation"
-                ):
-                    imgs, labels = imgs.to(device), labels.to(device)
-                    outputs = model(imgs)
-                    preds = outputs.argmax(1)
-                    val_correct += (preds == labels).sum().item()
-            val_acc = val_correct / len(val_loader.dataset)
-            print(
-                f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}"
-            )
-
-            scheduler.step(val_acc)
-            if val_acc > best_val_acc:
-                best_val_acc = val_acc
-                epochs_no_improve = 0
-                now = datetime.now().strftime("%Y%m%d%H%M%S")
-                best_model_path = f"src/models/resnet18_patch_classifier_weighted_loss_best_level{level}_{now}.pth"
-                torch.save(model.state_dict(), best_model_path)
-                print(
-                    f"{bcolors.INFO}[INFO]{bcolors.ENDC} Best validation accuracy achieved. Model saved to {best_model_path}"
-                )
-            else:
-                epochs_no_improve += 1
-                if epochs_no_improve >= early_stop_patience:
-                    print(
-                        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Early stopping triggered at epoch {epoch+1}."
-                    )
-                    break
-
-    now = datetime.now().strftime("%Y%m%d%H%M%S")
-    final_model_save_path = (
-        f"src/models/resnet18_patch_classifier_{strategy}_final_level{level}_{now}.pth"
-    )
-    if model is not None:
-        torch.save(model.state_dict(), final_model_save_path)
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Final training complete. Model saved to {final_model_save_path}."
-        )
     else:
-        print(
-            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Model was not initialized. Check strategy parameter."
+        model = ResNetClassifier().to(device)
+        criterion = (
+            nn.CrossEntropyLoss(weight=weight_tensor)
+            if strategy == "weighted_loss"
+            else nn.CrossEntropyLoss()
+        )
+        optimizer = Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
+        scheduler = ReduceLROnPlateau(
+            optimizer, mode="max", factor=0.1, patience=5, verbose=True
+        )
+        train_resnet(
+            model,
+            train_loader,
+            val_loader,
+            train_dataset,
+            val_dataset,
+            criterion,
+            optimizer,
+            scheduler,
+            30,
+            base_model_path,
         )
 
 
@@ -1063,10 +548,11 @@ def train_mil_classifier(
     epochs=100,
     lr=1e-4,
     patience=10,
-    model_type="resnet18_patch_classifier_final_level3_20250710055900.pth",
+    model_type="resnet18",
 ):
     """
-    Trains a Multiple Instance Learning (MIL) classifier using extracted WSI features.
+    Train a Multiple Instance Learning (MIL) classifier using extracted WSI features.
+
     Parameters:
     - feature_level (int): WSI level from which features were extracted.
     - pooling (str): Aggregation method ('attention', 'mean', 'max').
@@ -1077,7 +563,7 @@ def train_mil_classifier(
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    feature_base_dir = os.path.join(
+    feature_base_dir_train = os.path.join(
         os.getcwd(),
         "data",
         "camelyon16",
@@ -1085,27 +571,38 @@ def train_mil_classifier(
         f"level_{feature_level}",
         model_type,
     )
-    if not os.path.exists(feature_base_dir):
+    feature_base_dir_val = os.path.join(
+        os.getcwd(),
+        "data",
+        "camelyon16",
+        "features",
+        f"level_{feature_level}",
+        model_type,
+        "val",
+    )
+    if not os.path.exists(feature_base_dir_train) or not os.path.exists(
+        feature_base_dir_val
+    ):
         print(
-            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Feature directory '{feature_base_dir}' does not exist. Please run feature extraction first."
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Feature directory does not exist. Please run feature extraction first."
         )
         return
 
-    train_loader, val_loader = get_mil_dataloaders(
-        feature_base_dir, batch_size=1
-    )  # batch_size=1 for MIL bags
+    train_loader, val_loader, _ = get_mil_dataloaders(
+        feature_base_dir_train,
+        feature_base_dir_val,
+        feature_base_dir_test=None,
+        batch_size=1,
+    )
 
-    model = MILClassifier(feature_dim=512, pooling=pooling).to(device)
+    feature_dim = 512 if model_type == "resnet18" else 2048
+    model = MILClassifier(feature_dim=feature_dim, pooling=pooling).to(device)
 
     # Optimizer: All parameters of the MILClassifier are trainable.
-    # If pooling is 'mean' or 'max', self.aggregator has no params, so it won't be included.
-    optimizer = torch.optim.Adam(
-        model.parameters(), lr=lr, weight_decay=1e-5
-    )  # Added weight decay
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
 
     criterion = nn.CrossEntropyLoss()
 
-    # Learning Rate Scheduler
     scheduler = ReduceLROnPlateau(
         optimizer,
         mode="max",
@@ -1113,7 +610,7 @@ def train_mil_classifier(
         patience=patience // 2,
         verbose=True,
         threshold=0.001,
-    )  # Half patience for scheduler
+    )
 
     best_auc = 0.0
     best_model_wts = copy.deepcopy(model.state_dict())
@@ -1121,18 +618,23 @@ def train_mil_classifier(
 
     scaler = torch.cuda.amp.GradScaler()  # For mixed precision training
 
+    # For consistent naming
+    base_model_name = f"mil_resnet18_level{feature_level}"
+
     for epoch in range(epochs):
         # ----------- Train -----------
         model.train()
         train_loss = 0.0
         train_preds, train_labels = [], []
         for bags, labels in tqdm(train_loader, desc=f"MIL Epoch {epoch+1} Training"):
-            bags, labels = bags[0].to(device), labels.to(
+            bags, labels = bags[0].to(
                 device
-            )  # bags[0] because DataLoader returns (batch_size, bag_tensor)
+            ), labels.to(  # bags[0] because DataLoader returns (batch_size, bag_tensor)
+                device
+            )
 
             optimizer.zero_grad()
-            with torch.cuda.amp.autocast():  # Mixed precision
+            with torch.cuda.amp.autocast():  # mixed prec bec MIL can be memory intensive
                 logits, _ = model(bags)
                 loss = criterion(
                     logits.unsqueeze(0), labels
@@ -1182,7 +684,7 @@ def train_mil_classifier(
             best_auc = val_auc
             best_model_wts = copy.deepcopy(model.state_dict())
             early_stop_counter = 0
-            best_model_path = f"src/models/mil_classifier_{pooling}_best_level{feature_level}_{model_type}.pth"
+            best_model_path = f"src/models/{base_model_name}_best.pth"
             torch.save(model.state_dict(), best_model_path)
             print(
                 f"{bcolors.INFO}[INFO]{bcolors.ENDC} Best validation AUC achieved. Model saved to {best_model_path}"
@@ -1197,7 +699,7 @@ def train_mil_classifier(
 
         # Save checkpoint every 10 epochs (or adjust frequency)
         if (epoch + 1) % 10 == 0:
-            checkpoint_path = f"src/models/mil_classifier_{pooling}_epoch{epoch+1}_level{feature_level}_{model_type}.pth"
+            checkpoint_path = f"src/models/{base_model_name}_epoch{epoch+1}.pth"
             torch.save(model.state_dict(), checkpoint_path)
             print(
                 f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checkpoint saved: {checkpoint_path}"
@@ -1205,35 +707,54 @@ def train_mil_classifier(
 
     # Load best model weights at the end
     model.load_state_dict(best_model_wts)
-    final_model_path = f"src/models/mil_classifier_{pooling}_final_level{feature_level}_{model_type}.pth"
+    final_model_path = f"src/models/{base_model_name}_final.pth"
     torch.save(model.state_dict(), final_model_path)
     print(
         f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Final best model saved to {final_model_path}. Best Val AUC: {best_auc:.4f}"
     )
 
 
-def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18_patch_classifier_final_level3_20250710055900.pth"):
-    model_path = os.path.join(
-        os.getcwd(), "src", "models", "mil_classifier_attention_best_level3_resnet18_patch_classifier_final_level3_20250710055900.pth.pth")
-    model = MILClassifier(feature_dim=512) 
+def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18"):
+    """
+    Test a trained MIL classifier on features extracted from WSI at a specific level.
+
+    Parameters:
+    - feature_level (int): WSI level from which features were extracted.
+    - pooling (str): Aggregation method ('attention', 'mean', 'max').
+    - model_type (str): The name of the feature extractor model (e.g., "resnet18").
+
+    Returns:
+    - dict: Test metrics (AUC, accuracy, precision, recall, f1_score).
+    """
+    model_path = get_latest_mil_model_path()
+    feature_dim = 512 if model_type == "resnet18" else 2048
+    model = MILClassifier(feature_dim=feature_dim, pooling=pooling)
+    print(model)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     model.to(device)
     feature_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "features", f"level_{feature_level}", model_type
+        os.getcwd(),
+        "data",
+        "camelyon16",
+        "features",
+        f"level_{feature_level}",
+        model_type,
+        "test",
     )
-    print(f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Testing MIL classifier with features from {feature_dir}...")
+    print(
+        f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Testing MIL classifier with features from {feature_dir}..."
+    )
     test_dataset = WSIMILTestDataset(feature_dir)
     if len(test_dataset) == 0:
-        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No feature files found in: {feature_dir}")
+        print(
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No feature files found in: {feature_dir}"
+        )
         return None
-
-    # Using batch_size=1 for WSI because each "bag" is one WSI
-    test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+    test_loader = get_mil_dataloaders(feature_base_dir_test=feature_dir, batch_size=1)
     for features, label, wsi_name in test_loader:
         print(f"WSI: {wsi_name[0]}, Label: {label.item()}, Shape: {features.shape}")
-
 
     all_predictions = []
     all_true_labels = []
@@ -1243,49 +764,48 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
 
     with torch.no_grad():
         for features, labels, wsi_name in test_loader:
-            # Features are a list of tensors, each tensor is a bag of patches for one WSI
             # In our DataLoader, batch_size=1, so features will be a list containing one tensor
-            features = features.squeeze(0).to(
-                device
-            )  # Remove batch dimension, move to device
+            features = features.squeeze(0).to(device)
             labels = labels.to(device)
 
-            output = model(features)  # Output is logits for each class
-            probabilities = (
-                torch.softmax(output, dim=1)[:, 1].cpu().item()
-            )  # Probability of positive class (tumor)
-            predicted_label = (
+            logits, _ = model(features)
+            print(f"Logits: {logits.cpu().numpy()}")
+
+            probs = torch.softmax(logits, dim=0).cpu()
+            probabilities = probs[1].item()
+            entropy = -torch.sum(probs * torch.log(probs + 1e-8)).item()
+            print(f"Entropy: {entropy:.4f}, Probabilities: {probs.tolist()}")
+            predicted_label = int(
                 probabilities > 0.5
-            ).long()  # Binary prediction based on 0.5 threshold
+            )  # Binary prediction based on 0.5 threshold
 
             all_predictions.append(probabilities)
             all_true_labels.append(labels.cpu().item())
             wsi_names.append(wsi_name[0])  # wsi_name is a tuple
 
             print(
-                f"WSI: {wsi_name[0]}, True Label: {labels.cpu().item()}, Predicted Probability (Tumor): {probabilities:.4f}, Predicted Class: {predicted_label.item()}"
+                f"WSI: {wsi_name[0]}, True Label: {labels.cpu().item()}, Predicted Probability (Tumor): {probabilities:.4f}, Predicted Class: {predicted_label}"
             )
 
-    # Calculate metrics only if there are samples
     if len(all_true_labels) == 0 or len(all_predictions) == 0:
-        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No test samples found. Check your test feature directory and data preparation.")
+        print(
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No test samples found. Check your test feature directory and data preparation."
+        )
         return None
     auc_score = roc_auc_score(all_true_labels, all_predictions)
-    # Convert probabilities to binary predictions for other metrics
     binary_predictions = [1 if p > 0.5 else 0 for p in all_predictions]
     accuracy = accuracy_score(all_true_labels, binary_predictions)
     precision = precision_score(all_true_labels, binary_predictions, zero_division=0)
     recall = recall_score(all_true_labels, binary_predictions, zero_division=0)
     f1 = f1_score(all_true_labels, binary_predictions, zero_division=0)
 
-    print(f"\n{bcolors.OKGREEN}--- Test Results ---{bcolors.ENDC}")
+    print(f"\n{bcolors.OKBLUE}--- Test Results ---{bcolors.ENDC}")
     print(f"Test AUC: {auc_score:.4f}")
     print(f"Test Accuracy: {accuracy:.4f}")
     print(f"Test Precision: {precision:.4f}")
     print(f"Test Recall: {recall:.4f}")
     print(f"Test F1-Score: {f1:.4f}")
 
-    # save detailed results
     results_df = pd.DataFrame(
         {
             "WSI_Name": wsi_names,
@@ -1308,190 +828,183 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
     }
 
 
-def extract_patches(
-    patch_size=224, level=3, stride=None, pad=True, only_tumor=False, test=False
-):
+def extract_patches(patch_size=224, level=3, stride=None, pad=True):
+    """
+    Extract patches from WSIs at a given level and save them to disk.
+
+    Parameters:
+    - patch_size (int): Size of the patch to extract.
+    - level (int): WSI level for patch extraction.
+    - stride (int or None): Stride for patch extraction. Defaults to patch_size.
+    - pad (bool): Whether to pad the image to fit patches exactly.
+    """
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Extracting patches at level {level}...")
     stride = stride or patch_size
 
-    # Set patch size according to level
     patch_sizes = {0: 1792, 1: 896, 2: 448, 3: 224}
     patch_size = patch_sizes.get(level, 224)
 
-    if test:
-        wsi_dir = os.path.join(os.getcwd(), "data", "camelyon16", "test", "img")
-        annot_dir_test = os.path.join(
-            os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
-        )
-        level_dir = os.path.join(
-            os.getcwd(), "data", "camelyon16", "patches", f"test_level_{level}", "test"
-        )
-    else:
-        wsi_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img")
-        annot_dir_train = os.path.join(
-            os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
-        )
-        level_dir = os.path.join(
-            os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
-        )
-    os.makedirs(level_dir, exist_ok=True)
-    for file in os.listdir(wsi_dir):
-        if not file.endswith(".tif"):
-            continue
-        prefix = file.replace(".tif", "")
+    sets = [
+        {
+            "name": "train",
+            "wsi_dir": os.path.join(os.getcwd(), "data", "camelyon16", "train", "img"),
+            "annot_dir": os.path.join(
+                os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
+            ),
+            "patch_dir": os.path.join(
+                os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "train"
+            ),
+        },
+        {
+            "name": "val",
+            "wsi_dir": os.path.join(os.getcwd(), "data", "camelyon16", "val", "img"),
+            "annot_dir": os.path.join(
+                os.getcwd(), "data", "camelyon16", "val", "mask", "annotations"
+            ),
+            "patch_dir": os.path.join(
+                os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "val"
+            ),
+        },
+        {
+            "name": "test",
+            "wsi_dir": os.path.join(os.getcwd(), "data", "camelyon16", "test", "img"),
+            "annot_dir": os.path.join(
+                os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
+            ),
+            "patch_dir": os.path.join(
+                os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "test"
+            ),
+        },
+    ]
 
-        # Check if patches for this image already exist
-        patch_save_dir = os.path.join(level_dir, prefix)
-        if os.path.exists(patch_save_dir) and len(os.listdir(patch_save_dir)) > 0:
+    for s in sets:
+        wsi_dir = s["wsi_dir"]
+        annot_dir = s["annot_dir"]
+        level_dir = s["patch_dir"]
+        os.makedirs(level_dir, exist_ok=True)
+        if not os.path.exists(wsi_dir):
             print(
-                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patches for {file} already extracted, skipping."
+                f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} WSI directory {wsi_dir} does not exist, skipping."
             )
             continue
-        os.makedirs(patch_save_dir, exist_ok=True)
+        for file in os.listdir(wsi_dir):
+            if not file.endswith(".tif"):
+                continue
+            prefix = file.replace(".tif", "")
 
-        wsi_path = os.path.join(wsi_dir, file)
-        xml_name = file.replace(".tif", ".xml")
-        if file.startswith("test_"):
-            xml_path = os.path.join(annot_dir_test, xml_name)
-        elif file.startswith("normal_") or file.startswith("tumor_"):
-            xml_path = os.path.join(annot_dir_train, xml_name)
-        try:
-            slide = openslide.OpenSlide(wsi_path)
-        except Exception as e:
+            # Check if patches for this image already exist
+            patch_save_dir = os.path.join(level_dir, prefix)
             print(
-                f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Could not open {wsi_path}: {e}"
+                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checking patches for {file} in {patch_save_dir}..."
             )
-            continue
-        downsample = slide.level_downsamples[level]
-        width, height = slide.level_dimensions[level]
+            if os.path.exists(patch_save_dir) and len(os.listdir(patch_save_dir)) > 0:
+                print(
+                    f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patches for {file} already extracted, skipping."
+                )
+                continue
+            os.makedirs(patch_save_dir, exist_ok=True)
 
-        # Calculate padded size if needed
-        if pad:
-            pad_w = (patch_size - width % patch_size) % patch_size
-            pad_h = (patch_size - height % patch_size) % patch_size
-            padded_width = width + pad_w
-            padded_height = height + pad_h
-        else:
-            padded_width = width
-            padded_height = height
-
-        # Load and render XML mask
-        mask = None
-        if os.path.exists(xml_path):
+            wsi_path = os.path.join(wsi_dir, file)
+            xml_name = file.replace(".tif", ".xml")
+            xml_path = os.path.join(annot_dir, xml_name)
             try:
-                mask = parse_xml_mask(xml_path, (width, height), slide)
-                if pad and (pad_w > 0 or pad_h > 0):
-                    mask = ImageOps.expand(mask, (0, 0, pad_w, pad_h), fill=0)
+                slide = openslide.OpenSlide(wsi_path)
             except Exception as e:
                 print(
-                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Failed to parse XML for {file}: {e}"
+                    f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Could not open {wsi_path}: {e}"
                 )
-        else:
+                continue
+            downsample = slide.level_downsamples[level]
+            width, height = slide.level_dimensions[level]
+
+            # Calculate padded size if needed
+            if pad:
+                pad_w = (patch_size - width % patch_size) % patch_size
+                pad_h = (patch_size - height % patch_size) % patch_size
+                padded_width = width + pad_w
+                padded_height = height + pad_h
+            else:
+                padded_width = width
+                padded_height = height
+
+            # Load and render XML mask
+            mask = None
+            if os.path.exists(xml_path):
+                try:
+                    mask = parse_xml_mask(xml_path, (width, height), slide)
+                    if pad and (pad_w > 0 or pad_h > 0):
+                        mask = ImageOps.expand(mask, (0, 0, pad_w, pad_h), fill=0)
+                except Exception as e:
+                    print(
+                        f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Failed to parse XML for {file}: {e}"
+                    )
+            else:
+                print(
+                    f"{bcolors.INFO}[INFO]{bcolors.ENDC} No annotation found for {file} in {xml_path}, treating as normal."
+                )
+
             print(
-                f"{bcolors.INFO}[INFO]{bcolors.ENDC} No annotation found for {file} in {xml_path}, treating as normal."
+                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Processing {file} at level {level} (size: {width}x{height}, padded: {padded_width}x{padded_height})"
             )
 
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Processing {file} at level {level} (size: {width}x{height}, padded: {padded_width}x{padded_height})"
-        )
+            patch_count = 0
+            for x in range(0, padded_width, stride):
+                for y in range(0, padded_height, stride):
+                    # Only process if the top-left corner is inside the original image
+                    if x >= width or y >= height:
+                        continue
 
-        patch_count = 0
-        for x in range(0, padded_width, stride):
-            for y in range(0, padded_height, stride):
-                # Only process if the top-left corner is inside the original image
-                if x >= width or y >= height:
-                    continue
+                    patch_w = min(patch_size, width - x)
+                    patch_h = min(patch_size, height - y)
+                    if patch_w <= 0 or patch_h <= 0:
+                        continue
 
-                patch_w = min(patch_size, width - x)
-                patch_h = min(patch_size, height - y)
-                if patch_w <= 0 or patch_h <= 0:
-                    continue
+                    region = slide.read_region(
+                        (int(x * downsample), int(y * downsample)),
+                        level,
+                        (patch_w, patch_h),
+                    ).convert("RGB")
 
-                region = slide.read_region(
-                    (int(x * downsample), int(y * downsample)),
-                    level,
-                    (patch_w, patch_h),
-                ).convert("RGB")
+                    # If patch is smaller than patch_size (at border), pad it to patch_size
+                    if patch_w < patch_size or patch_h < patch_size:
+                        padded_region = Image.new(
+                            "RGB", (patch_size, patch_size), (255, 255, 255)
+                        )
+                        padded_region.paste(region, (0, 0))
+                        region = padded_region
 
-                # If patch is smaller than patch_size (at border), pad it to patch_size
-                if patch_w < patch_size or patch_h < patch_size:
-                    padded_region = Image.new(
-                        "RGB", (patch_size, patch_size), (255, 255, 255)
-                    )
-                    padded_region.paste(region, (0, 0))
-                    region = padded_region
-
-                label = "unlabeled"  # Default label for normal patches
-                # Check if the patch overlaps with any positimve (tumor) region in the generated binary mask
-                if mask:
-                    mask_patch = mask.crop((x, y, x + patch_size, y + patch_size))
-                    if np.any(np.array(mask_patch) > 0):
-                        label = "tumor"
+                    label = "unlabeled"
+                    # Check if the patch overlaps with any positive (tumor) region in the generated binary mask
+                    if mask:
+                        mask_patch = mask.crop((x, y, x + patch_size, y + patch_size))
+                        if np.any(np.array(mask_patch) > 0):
+                            label = "tumor"
+                        else:
+                            label = "normal"
                     else:
                         label = "normal"
 
-                else:
-                    # print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} No mask available for {prefix}, treating as normal.")
-                    label = "normal"
+                    patch_array = np.array(region)
+                    if np.mean(patch_array) > 240:  # too white (empty tissue)
+                        continue
 
-                patch_array = np.array(region)
-                if np.mean(patch_array) > 240:  # too white (empty tissue)
-                    continue
+                    patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
+                    patch_path = os.path.join(patch_save_dir, patch_name)
+                    if not os.path.exists(patch_path):
+                        region.save(patch_path)
+                    patch_count += 1
 
-                patch_name = f"{prefix}_x{x}_y{y}_{label}.png"
-                # Only save the patch if it was not saved yet
-                patch_path = os.path.join(patch_save_dir, patch_name)
-                if not os.path.exists(patch_path):
-                    region.save(patch_path)
-                patch_count += 1
-
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patch extraction complete for {file} at level {level}. Total patches: {patch_count}"
-        )
-
-
-def check_good_downloaded_files(level=3):
-    camelyon_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
-    )
-    to_redownload = []
-    for folder_type, folders in DOWNLOADED_FILES.items():
-        for remote_folder_path in folders:
-            folder_name = os.path.basename(remote_folder_path)
-            local_path = os.path.join(camelyon_dir, remote_folder_path)
-
-            if not os.path.exists(local_path):
-                print(
-                    f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Missing folder: {local_path}"
-                )
-                to_redownload.append(remote_folder_path)
-            else:
-                # For every file in the folder, check if it exists and is valid
-                for file_name in os.listdir(local_path):
-                    # Try to open image files to check for corruption
-                    if file_name.endswith((".png")):
-                        try:
-                            with Image.open(local_path) as img:
-                                img.load()  # Force loading all image data
-                        except Exception as e:
-                            print(
-                                f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} File is corrupt or incomplete: {file_name} ({e})"
-                            )
-                            to_redownload.append(remote_folder_path)
-                    else:
-                        print(
-                            f"{bcolors.INFO}[INFO]{bcolors.ENDC} File exists and is valid: {file_name}"
-                        )
-    if to_redownload:
-        redownload_file = os.path.join(camelyon_dir, "redownload.txt")
-        with open(redownload_file, "w") as f:
-            for folder in to_redownload:
-                f.write(folder + "\n")
+            print(
+                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Patch extraction complete for {file} at level {level}. Total patches: {patch_count}"
+            )
 
 
 def count_number_tumor_patches(level=3):
     """
-    Count how many patches ending with _tumor.png and _normal.png are in the patch directory for a given level across all slides.
+    Count the number of tumor and normal patches in the patch directory for a given level across all slides.
+
+    Parameters:
+    - level (int): WSI level for patch extraction.
     """
     patch_dir = os.path.join(
         os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
@@ -1556,20 +1069,25 @@ def count_number_tumor_patches(level=3):
         )
 
 
-def extract_features_per_wsi(
-    test=True,
+def extract_features(
     level=3,
-    model_name="resnet18_patch_classifier_final_20250710055900",
+    model_type="resnet18",
     simclr_trained_model=False,
 ):
     """
-    Extract features from patches and save them grouped by WSI for MIL.
+    Extract features from patches using a trained ResNet model and save them grouped by WSI for MIL.
+
     Parameters:
-    - level: int, WSI level to extract patches from.
-    - model_name: str, base name of the pre-trained ResNet18 classifier model.
-    - simclr_trained_model: bool, True if the model was trained with SimCLR pretraining.
+    - level (int): WSI level for patch extraction.
+    - model_name (str): Name of the trained ResNet model to use for feature extraction.
+    - simclr_trained_model (bool): Whether the model was trained with SimCLR.
     """
-    model_path = os.path.join(os.getcwd(), "src", "models", f"{model_name}")
+    model_path = os.path.join(os.getcwd(), "src", "models", model_type)
+    if not os.path.exists(model_path):
+        print(
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Model file '{model_path}' not found."
+        )
+        return
 
     transform = T.Compose(
         [
@@ -1578,117 +1096,127 @@ def extract_features_per_wsi(
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
-    if not test:
+
+    sets = ["train", "val", "test"]
+    for split in sets:
         patch_dir = os.path.join(
-            os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
+            os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", split
         )
-    else:
-        patch_dir = os.path.join(
-            os.getcwd(), "data", "camelyon16", "patches", f"test_level_{level}", "test"
-        )
+        if not os.path.exists(patch_dir) or not os.listdir(patch_dir):
+            print(
+                f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Patch directory {patch_dir} is missing or empty. Skipping {split}."
+            )
+            continue
 
-    if not os.path.exists(patch_dir) or not os.listdir(patch_dir):
         print(
-            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patch directory '{patch_dir}' does not exist or is empty. Please run patch extraction first."
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Extracting features for {split} set..."
         )
-        return
 
-    dataset = PatchDataset(patch_dir, transform=transform)
-    loader = torch.utils.data.DataLoader(
-        dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8
-    )
+        dataset = PatchDataset(patch_dir, transform=transform)
+        loader = torch.utils.data.DataLoader(
+            dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8
+        )
 
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Extracting features from patches at level {level} using model: {model_name}."
-    )
+        try:
+            model = ResNetFeatureExtractor(
+                trained_classifier_weights_path=model_path,
+                simclr_trained=simclr_trained_model,
+            ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
+        except NameError:
+            print(
+                f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} ResNetFeatureExtractor not defined."
+            )
+            return
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    # Use the unified feature extractor if available, else fallback
-    try:
-        model = ResNet18FeatureExtractor(
-            trained_classifier_weights_path=model_path,
-            simclr_trained=simclr_trained_model,
-        ).to(device)
-    except NameError:
-        model = ResNet18FeatureExtractor(
-            trained_classifier_weights_path=model_path,
-            simclr_trained=simclr_trained_model,
-        ).to(device)
-    model.eval()
+        model.eval()
 
-    wsi_features_dict = defaultdict(lambda: {"features": [], "patch_labels": []})
-    wsi_overall_labels = {}
+        wsi_features_dict = defaultdict(lambda: {"features": [], "patch_labels": []})
+        wsi_overall_labels = {}
 
-    with torch.no_grad():
-        for batch_idx, (imgs, lbls, img_paths) in enumerate(
-            tqdm(loader, desc="Extracting Features")
-        ):
-            feats = model(imgs.to(device)).cpu().numpy()
-            for i in range(imgs.size(0)):
-                patch_path = img_paths[i]
-                patch_label = lbls[i].item()
-                rel_path = os.path.relpath(patch_path, patch_dir)
-                wsi_name = rel_path.split(os.sep)[0]
-                wsi_features_dict[wsi_name]["features"].append(feats[i])
-                wsi_features_dict[wsi_name]["patch_labels"].append(patch_label)
-                if patch_label == 1:
-                    wsi_overall_labels[wsi_name] = 1
-                elif wsi_name not in wsi_overall_labels:
-                    wsi_overall_labels[wsi_name] = 0
+        with torch.no_grad():
+            for batch_idx, (imgs, lbls, img_paths) in enumerate(
+                tqdm(loader, desc=f"Extracting Features - {split}")
+            ):
+                feats = (
+                    model(imgs.cuda() if torch.cuda.is_available() else imgs)
+                    .cpu()
+                    .numpy()
+                )
+                for i in range(imgs.size(0)):
+                    patch_path = img_paths[i]
+                    patch_label = lbls[i].item()
+                    rel_path = os.path.relpath(patch_path, patch_dir)
+                    wsi_name = rel_path.split(os.sep)[0]
+                    wsi_features_dict[wsi_name]["features"].append(feats[i])
+                    wsi_features_dict[wsi_name]["patch_labels"].append(patch_label)
+                    if patch_label == 1:
+                        wsi_overall_labels[wsi_name] = 1
+                    elif wsi_name not in wsi_overall_labels:
+                        wsi_overall_labels[wsi_name] = 0
 
-    if not wsi_features_dict:
+        if not wsi_features_dict:
+            print(
+                f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} No features extracted for {split}."
+            )
+            continue
+
+        # Save features to correct path
+        features_save_dir = os.path.join(
+            os.getcwd(),
+            "data",
+            "camelyon16",
+            "features",
+            f"level_{level}",
+            model_type,
+            split,
+        )
+        os.makedirs(features_save_dir, exist_ok=True)
+
+        wsi_paths_list = []
+        for wsi_name, data in wsi_features_dict.items():
+            wsi_feature_array = np.array(data["features"])
+            wsi_patch_labels_array = np.array(data["patch_labels"])
+            wsi_overall_label = wsi_overall_labels[wsi_name]
+
+            wsi_feature_path = os.path.join(
+                features_save_dir, f"{wsi_name}_features.npy"
+            )
+            wsi_label_path = os.path.join(features_save_dir, f"{wsi_name}_label.npy")
+            wsi_patch_labels_path = os.path.join(
+                features_save_dir, f"{wsi_name}_patch_labels.npy"
+            )
+
+            if not (
+                os.path.exists(wsi_feature_path)
+                and os.path.exists(wsi_label_path)
+                and os.path.exists(wsi_patch_labels_path)
+            ):
+                np.save(wsi_feature_path, wsi_feature_array)
+                np.save(wsi_label_path, np.array(wsi_overall_label))
+                np.save(wsi_patch_labels_path, wsi_patch_labels_array)
+            else:
+                print(
+                    f"{bcolors.INFO}[INFO]{bcolors.ENDC} Feature files for {wsi_name} already exist, skipping."
+                )
+
+            wsi_paths_list.append(wsi_feature_path)
+
+        feature_list_path = os.path.join(
+            features_save_dir, f"wsi_feature_paths_{split}.txt"
+        )
+        with open(feature_list_path, "w") as f:
+            for p in wsi_paths_list:
+                f.write(f"{p}\n")
+
         print(
-            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No features were extracted. Check your patch directory and dataset."
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Features for {split} saved to {features_save_dir}."
         )
-        return
-
-    features_save_base_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "features", f"level_{level}", model_name
-    )
-    os.makedirs(features_save_base_dir, exist_ok=True)
-
-    wsi_paths_list = []
-    for wsi_name, data in wsi_features_dict.items():
-        wsi_feature_array = np.array(data["features"])
-        wsi_patch_labels_array = np.array(data["patch_labels"])
-        wsi_overall_label = wsi_overall_labels[wsi_name]
-
-        wsi_feature_path = os.path.join(
-            features_save_base_dir, f"{wsi_name}_features.npy"
-        )
-        wsi_label_path = os.path.join(features_save_base_dir, f"{wsi_name}_label.npy")
-        wsi_patch_labels_path = os.path.join(
-            features_save_base_dir, f"{wsi_name}_patch_labels.npy"
-        )
-
-        np.save(wsi_feature_path, wsi_feature_array)
-        np.save(wsi_label_path, np.array(wsi_overall_label))
-        np.save(wsi_patch_labels_path, wsi_patch_labels_array)
-
-        wsi_paths_list.append(wsi_feature_path)
-
-    now = datetime.now().strftime("%Y%m%d%H%M%S")
-    if test:
-        all_wsi_features_list_path = os.path.join(
-            features_save_base_dir, f"wsi_feature_paths_test_{now}.txt"
-        )
-    else:
-        all_wsi_features_list_path = os.path.join(
-            features_save_base_dir, f"wsi_feature_paths_train_{now}.txt"
-        )
-    with open(all_wsi_features_list_path, "w") as f:
-        for p in wsi_paths_list:
-            f.write(f"{p}\n")
-
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Features extracted and saved per WSI in {features_save_base_dir}."
-    )
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} A list of all WSI feature paths is saved to {all_wsi_features_list_path}."
-    )
 
 
 def prepare_data():
+    """
+    Prepare data by extracting training and testing masks from zip files.
+    """
     print(f"{bcolors.HEADER}{bcolors.BOLD}[HEADER]{bcolors.ENDC} Preparing data...")
 
     # Extract training masks
@@ -1723,6 +1251,12 @@ def prepare_data():
 
 
 def images_downloaded():
+    """
+    Check if training images have been downloaded.
+
+    Returns:
+    - bool: True if images are present, False otherwise.
+    """
     img_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img")
     return (
         os.path.exists(img_dir)
@@ -1731,6 +1265,15 @@ def images_downloaded():
 
 
 def patches_extracted(patch_level):
+    """
+    Check if patches have been extracted at the specified level.
+
+    Parameters:
+    - patch_level (int): WSI level for patch extraction.
+
+    Returns:
+    - bool: True if patches exist, False otherwise.
+    """
     patch_dir = os.path.join(
         os.getcwd(), "data", "camelyon16", "patches", f"level_{patch_level}"
     )
@@ -1738,125 +1281,78 @@ def patches_extracted(patch_level):
 
 
 def features_extracted(patch_level):
+    """
+    Check if features have been extracted for the specified patch level.
+
+    Parameters:
+    - patch_level (int): WSI level for patch extraction.
+
+    Returns:
+    - bool: True if feature files exist, False otherwise.
+    """
     return os.path.exists(f"patch_features_{patch_level}.npy") and os.path.exists(
         f"patch_labels_{patch_level}.npy"
     )
 
 
-def evaluate_resnet_classifier(patch_level=3):
+def create_validation_set():
     """
-    Evaluate the ResNet18 classifier on validation patches.
+    Create a validation set by moving 20% of training slides and their annotations to a validation directory.
     """
-    model_path = os.path.join(
-        os.getcwd(), "src", "models", "resnet18_patch_classifier_level{level}.pth"
-    )
-    if not os.path.exists(model_path):
+    train_dir = os.path.join(os.getcwd(), "data", "camelyon16", "train", "img")
+    if not os.path.exists(train_dir):
         print(
-            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Model file '{model_path}' does not exist. Please train the model first."
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Training directory '{train_dir}' does not exist. Please download the dataset first."
         )
         return
-    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Evaluating ResNet18 classifier...")
 
-    patch_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "patches", f"level_{patch_level}"
-    )
+    val_dir = os.path.join(os.getcwd(), "data", "camelyon16", "val", "img")
+    os.makedirs(val_dir, exist_ok=True)
 
-    transform = transforms.Compose(
-        [
-            transforms.Resize((224, 224)),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
-
-    _, val_loader, _, val_dataset = get_dataloaders(
-        patch_dir, transform, test_ratio=0.2, batch_size=BATCH_SIZE
-    )
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = ResNet18Classifier().to(device)
-    if torch.cuda.device_count() > 1:
-        model = nn.DataParallel(model)
-    model.load_state_dict(torch.load(model_path, map_location=device))
-    model.eval()
-
-    correct = 0
-    total = 0
-
-    with torch.no_grad():
-        for imgs, labels, _ in val_loader:
-            imgs, labels = imgs.to(device), labels.to(device)
-            outputs = model(imgs)
-            preds = outputs.argmax(dim=1)
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
-
-    acc = correct / total
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Classifier accuracy on validation patches: {acc:.4f}"
-    )
-
-
-def validate_resnet_classifier(
-    model_path="src/models/resnet18_patch_classifier_level{level}.pth",
-):
-    """
-    Sanity check for extracted patch features — no plotting, CLI only.
-    """
-    features_path = os.path.join(os.getcwd(), "patch_features_3.npy")
-    labels_path = os.path.join(os.getcwd(), "patch_labels_3.npy")
-    if not os.path.exists(features_path) or not os.path.exists(labels_path):
+    slides = [f for f in os.listdir(train_dir) if f.endswith(".tif")]
+    if not slides:
         print(
-            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Features or labels not found. Please run feature extraction first."
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No slides found in training directory '{train_dir}'. Please check if the dataset is downloaded."
         )
         return
-    features = np.load(features_path)  # shape: (N, 512)
-    labels = np.load(labels_path)  # shape: (N,)
+    _, val_slides = train_test_split(slides, test_size=0.2, random_state=42)
+    # Move files
+    for slide in val_slides:
+        src_path = os.path.join(train_dir, slide)
+        dst_path = os.path.join(val_dir, slide)
+        if os.path.exists(dst_path):
+            print(
+                f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Slide {slide} already exists in validation directory. Skipping."
+            )
+            continue
+        os.rename(src_path, dst_path)
+        print(
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Moved {slide} to validation directory."
+        )
 
-    print(f"[INFO] Feature shape: {features.shape}")
-    print(f"[INFO] Labels shape: {labels.shape}")
-    print(f"[INFO] Label distribution (0=normal, 1=tumor): {np.bincount(labels)}")
-
-    # --------------------------------------
-    # 1. PCA - print explained variance ratio
-    # --------------------------------------
-    pca = PCA(n_components=2)
-    features_pca = pca.fit_transform(features)
-    print(
-        f"[INFO] PCA explained variance ratio (2 components): {pca.explained_variance_ratio_}"
+    annot_train_dir = os.path.join(
+        os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
     )
-
-    # Print means of each class in PCA space
-    for cls in [0, 1]:
-        mean_coords = features_pca[labels == cls].mean(axis=0)
-        print(f"[INFO] PCA mean for class {cls}: {mean_coords}")
-
-    # --------------------------------------
-    # 2. t-SNE - print mean coordinates to see separation
-    # --------------------------------------
-    tsne = TSNE(n_components=2, perplexity=30, max_iter=1000, random_state=42)
-    features_tsne = tsne.fit_transform(features)
-    for cls in [0, 1]:
-        mean_coords = features_tsne[labels == cls].mean(axis=0)
-        print(f"[INFO] t-SNE mean for class {cls}: {mean_coords}")
-
-    # --------------------------------------
-    # 3. Logistic Regression
-    # --------------------------------------
-    X_train, X_test, y_train, y_test = train_test_split(
-        features, labels, test_size=0.2, random_state=42, stratify=labels
+    annot_val_dir = os.path.join(
+        os.getcwd(), "data", "camelyon16", "val", "mask", "annotations"
     )
+    os.makedirs(annot_val_dir, exist_ok=True)
 
-    clf = LogisticRegression(max_iter=1000, class_weight="balanced")
-    clf.fit(X_train, y_train)
-    y_pred = clf.predict(X_test)
-
-    acc = accuracy_score(y_test, y_pred)
-    cm = confusion_matrix(y_test, y_pred)
-
-    print(f"[INFO] Logistic Regression Accuracy: {acc:.4f}")
-    print("[INFO] Confusion Matrix:")
-    print(cm)
+    # Move annotations
+    for slide in val_slides:
+        wsi_name = os.path.splitext(slide)[0]
+        xml_filename = f"{wsi_name}.xml"
+        src_xml = os.path.join(annot_train_dir, xml_filename)
+        dst_xml = os.path.join(annot_val_dir, xml_filename)
+        if os.path.exists(src_xml):
+            shutil.copy2(src_xml, dst_xml)
+            print(
+                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Copied annotation {xml_filename} to validation annotations."
+            )
+        else:
+            print(
+                f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Annotation {xml_filename} not found in training annotations."
+            )
 
 
 def main():
@@ -1913,12 +1409,6 @@ def main():
         help="Count number of tumor patches at a given level.",
     )
     parser.add_argument(
-        "--patch_one_slide",
-        type=str,
-        default=None,
-        help="Extract patches from a single slide directory (e.g. tumor_109)",
-    )
-    parser.add_argument(
         "--slide",
         type=str,
         default=None,
@@ -1935,11 +1425,6 @@ def main():
         help="Train ResNet classifier with a specific strategy",
     )
     parser.add_argument(
-        "--check_good_downloaded_files",
-        action="store_true",
-        help="Check if downloaded files are good (not corrupted)",
-    )
-    parser.add_argument(
         "--strategy",
         type=str,
         default="self_supervised",
@@ -1947,11 +1432,12 @@ def main():
         help="Training strategy for ResNet classifier",
     )
     parser.add_argument(
-        "--model_name",
+        "--model_type",
         type=str,
-        default="resnet18_patch_classifier_final_20250710055900",
+        default="resnet18",
         help="Name of the ResNet model to use for feature extraction",
     )
+
     parser.add_argument(
         "--train_mil",
         action="store_true",
@@ -1976,20 +1462,8 @@ def main():
 
     args = parser.parse_args()
 
-    # Download images
-    if args.check_good_downloaded_files:
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checking downloaded files for corruption..."
-        )
-        check_good_downloaded_files(
-            level=int(args.patch_level) if args.patch_level.isdigit() else 3
-        )
-        return
     if args.download:
         download_dataset(args.remote)
-
-    if args.move_files:
-        move_files()
 
     # Extract patches
     if args.patch:
@@ -2016,9 +1490,10 @@ def main():
                     f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patches must be extracted at level {lvl} before extracting features."
                 )
                 return
-        extract_features_per_wsi(
+        extract_features(
             level=int(args.patch_level) if args.patch_level != "all" else 3,
-            model_name=args.model_name, test=args.test_patch == "test",
+            model_type=args.model_type,
+            test=args.test_patch == "test",
         )  # default to level 3 if all
 
     # Train model
@@ -2069,18 +1544,10 @@ def main():
 
     if args.prepare:
         prepare_data()
-    if args.validate:
-        validate_resnet_classifier()
-    if args.evaluate:
-        evaluate_resnet_classifier(args.patch_level)
     if args.balance_dataset:
         download_all_tumor_extract_patches()
     if args.count_tumor_patches:
         count_number_tumor_patches(level=3)
-    if args.patch_one_slide:
-        extract_patches_per_slide(
-            slide_path=args.patch_one_slide, level=int(args.patch_level)
-        )
 
     if args.run_evaluation:
         """

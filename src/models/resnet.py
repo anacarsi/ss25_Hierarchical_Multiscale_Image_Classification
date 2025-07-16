@@ -6,7 +6,7 @@ import torch.nn as nn
 import torchvision.models as models
 import torch.nn.functional as F
 from torchvision import transforms as T
-from torchvision.models import ResNet18_Weights
+from torchvision.models import ResNet18_Weights, ResNet50_Weights
 import os
 
 
@@ -14,111 +14,109 @@ class bcolors:
     HEADER = "\033[95m"
     OKBLUE = "\033[94m"
     DEBUG = "\033[96m"
-    INFO = "\033[95m"  # pink
-    WARNING = "\033[93m"  # yellow
+    INFO = "\033[95m"
+    WARNING = "\033[93m"
     ERROR = "\033[91m"
     ENDC = "\033[0m"
     BOLD = "\033[1m"
     UNDERLINE = "\033[4m"
 
 
-class ResNet18FeatureExtractor(nn.Module):
-    def __init__(self, trained_classifier_weights_path=None, simclr_trained=False):
+class ResNetFeatureExtractor(nn.Module):
+    """
+    Feature extractor using ResNet18 or ResNet50 backbone.
+    Parameters:
+    - model_type (str): 'resnet18' or 'resnet50'.
+    - trained_classifier_weights_path (str or None): Path to trained classifier weights to load.
+    - simclr_trained (bool): Whether the model was trained with SimCLR.
+    """
+
+    def __init__(
+        self,
+        model_type="resnet18",  # 'resnet18' or 'resnet50'
+        trained_classifier_weights_path=None,
+        simclr_trained=False,
+    ):
         super().__init__()
-        if simclr_trained:
-            full_model = ResNet18ClassifierSIMCLR(
-                pretrained_weights_path=None, freeze_encoder=False
-            )
-            if trained_classifier_weights_path and os.path.exists(
-                trained_classifier_weights_path
-            ):
-                full_model.load_state_dict(
-                    torch.load(trained_classifier_weights_path, map_location="cpu")
-                )
-            else:
-                print(
-                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} No SIMCLR classifier weights found at {trained_classifier_weights_path}. Using initial weights."
-                )
-
-            # we want the layers before 'encoder.fc'
-            self.features = nn.Sequential(
-                *list(full_model.encoder.children())[:-1]
-            )  # (Linear->ReLU->Dropout->Linear)
-            # We want the output of the AdaptiveAvgPool2d layer, which is the last layer before `self.encoder.fc`, `list(resnet.children())[:-1]` gives up to `avgpool`.
-
+        assert model_type in ["resnet18", "resnet50"], "Only resnet18/50 supported"
+        self.model_type = model_type
+        if model_type == "resnet18":
+            base_model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
+            self.feature_dim = 512
+        elif model_type == "resnet50":
+            base_model = models.resnet50(weights=ResNet50_Weights.DEFAULT)
+            self.feature_dim = 2048
         else:
-            # Initialize the standard classifier structure
-            full_model = ResNet18Classifier()
-            if trained_classifier_weights_path and os.path.exists(
-                trained_classifier_weights_path
-            ):
-                full_model.load_state_dict(
-                    torch.load(trained_classifier_weights_path, map_location="cpu")
-                )
-            else:
-                print(
-                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} No standard classifier weights found at {trained_classifier_weights_path}. Using ImageNet pre-trained weights."
-                )
+            raise ValueError("Invalid model type")
 
-            # Access the base model and remove its final fc layer
-            self.features = nn.Sequential(*list(full_model.model.children())[:-1])
+        self.features = nn.Sequential(*list(base_model.children())[:-1])
+
+        if trained_classifier_weights_path and os.path.exists(
+            trained_classifier_weights_path
+        ):
+            state_dict = torch.load(trained_classifier_weights_path, map_location="cpu")
+            try:
+                self.features.load_state_dict(state_dict, strict=False)
+            except Exception as e:
+                print(f"[WARNING] Could not load weights into feature extractor: {e}")
 
     def forward(self, x):
+        """
+        Forward pass to extract features from input images.
+        Parameters:
+        - x (torch.Tensor): Input tensor of shape (B, 3, 224, 224).
+        Returns:
+        - torch.Tensor: Output tensor of shape (B, feature_dim).
+        """
         x = self.features(x)
-        return x.view(x.size(0), -1)  # Flatten the output of avgpool
+        return x.view(x.size(0), -1)  # (batch_size, feature_dim)
 
 
-class UnifiedResNet(nn.Module):
-    def __init__(self, pretrained_weights_path=None, classifier=False):
-        super().__init__()
-        self.model = models.resnet18(
-            weights=ResNet18_Weights.DEFAULT
-        )  # Uses ImageNet pre-trained weights
-        self.model.fc = nn.Identity()
-        if pretrained_weights_path and os.path.exists(pretrained_weights_path):
-            state_dict = torch.load(pretrained_weights_path, map_location="cpu")
-            state_dict = {k: v for k, v in state_dict.items() if "fc" not in k}
-            self.model.load_state_dict(state_dict, strict=False)
-        if classifier:
-            self.model.fc = nn.Linear(512, 2)
-
-    def forward(self, x):
-        return self.model(x)
-
-
-class ResNet18Classifier(nn.Module):
+class ResNetClassifier(nn.Module):
     """
-    ResNet18 model for binary classification of patches.
+    ResNet18 or ResNet50 model for binary classification of patches.
+    Parameters:
+    - model_type (str): 'resnet18' or 'resnet50'.
     """
 
-    def __init__(self):
+    def __init__(self, model_type="resnet18"):
         super().__init__()
-        self.model = models.resnet18(
-            weights=ResNet18_Weights.DEFAULT
-        )  # Uses ImageNet pre-trained weights
+        if model_type == "resnet18":
+            self.model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
+            self.feature_dim = 512
+        elif model_type == "resnet50":
+            self.model = models.resnet50(weights=ResNet50_Weights.DEFAULT)
+            self.feature_dim = 2048
+        else:
+            raise ValueError("Invalid model type")
         num_ftrs = self.model.fc.in_features
         self.model.fc = nn.Linear(num_ftrs, 2)  # binary classification
 
     def forward(self, x):
         """
-        Forward pass through the ResNet18 model to extract 512 (or more) dimensional feature vector.
+        Forward pass through the ResNet model for binary classification.
         Parameters:
-            x (torch.Tensor): Input tensor of shape (B, 3, 224, 224) where B is batch size.
+        - x (torch.Tensor): Input tensor of shape (B, 3, 224, 224).
         Returns:
-            torch.Tensor: Output tensor of shape (B, 2) for binary classification.
+        - torch.Tensor: Output tensor of shape (B, 2) for binary classification.
         """
         return self.model(x)
 
 
-# ------------------- ResNet18 Classifier w Pretrained SIMCLR -------------------
 class ResNet18ClassifierSIMCLR(nn.Module):
+    """
+    ResNet18 classifier for use with SimCLR pretraining.
+    Parameters:
+    - pretrained_weights_path (str or None): Path to SimCLR-pretrained weights.
+    - num_classes (int): Number of output classes (default 2).
+    - freeze_encoder (bool): Whether to freeze encoder layers (for phase 1 fine-tuning).
+    """
+
     def __init__(
         self, pretrained_weights_path=None, num_classes=2, freeze_encoder=True
     ):
         super().__init__()
-        self.encoder = models.resnet18(
-            pretrained=False
-        )  # Start without ImageNet weights, as SimCLR will provide
+        self.encoder = models.resnet18(pretrained=False)
         self.encoder.fc = nn.Identity()  # SimCLR doesn't have a classifier head
 
         if pretrained_weights_path and os.path.exists(pretrained_weights_path):
@@ -138,10 +136,7 @@ class ResNet18ClassifierSIMCLR(nn.Module):
             print(
                 "[WARNING] No pre-trained SimCLR weights found. Starting from scratch or ImageNet if not 'pretrained=False'."
             )
-            # If no SimCLR weights, we load ImageNet weights or pretrain SimCLR first. For this class, we assume SimCLR pretraining is the primary method.
-            self.encoder = models.resnet18(
-                weights=ResNet18_Weights.DEFAULT
-            )  # Fallback to ImageNet if no SimCLR
+            self.encoder = models.resnet18(weights=ResNet18_Weights.DEFAULT)
             self.encoder.fc = nn.Identity()
 
         # Freeze encoder layers if specified for phase 1 fine-tuning
@@ -155,21 +150,24 @@ class ResNet18ClassifierSIMCLR(nn.Module):
             print(
                 f"{bcolors.INFO}[INFO]{bcolors.ENDC} Encoder layers are trainable (unfrozen)."
             )
-            for (
-                param
-            ) in self.encoder.parameters():  # Ensure they are trainable if not frozen
+            for param in self.encoder.parameters():
                 param.requires_grad = True
 
-        # Final classification head - added regularization
         self.encoder.fc = nn.Sequential(
             nn.Linear(512, 256),
             nn.ReLU(),
             nn.Dropout(0.6),  # TODO: check this dropout rate
             nn.Linear(256, num_classes),
         )
-        # Ensure the new fc layer's parameters are always trainable
         for param in self.encoder.fc.parameters():
             param.requires_grad = True
 
     def forward(self, x):
+        """
+        Forward pass through the SimCLR-based ResNet18 classifier.
+        Parameters:
+        - x (torch.Tensor): Input tensor of shape (B, 3, 224, 224).
+        Returns:
+        - torch.Tensor: Output tensor of shape (B, num_classes).
+        """
         return self.encoder(x)
