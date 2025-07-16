@@ -349,9 +349,12 @@ def get_dataloaders(patch_dir, batch_size=BATCH_SIZE, balanced=False):
     train_slides = [
         d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))
     ]
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Found {len(train_slides)} training slides in {train_dir}.")
     val_slides = [
         d for d in os.listdir(val_dir) if os.path.isdir(os.path.join(val_dir, d))
     ]
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Found {len(val_slides)} validation slides in {val_dir}.")
+    print(f"For example, found slide: {val_slides[0]} in {val_dir}.")
     print(
         f"{bcolors.INFO}[INFO]{bcolors.ENDC} Found {len(train_slides) + len(val_slides)} slides in {patch_dir}."
     )

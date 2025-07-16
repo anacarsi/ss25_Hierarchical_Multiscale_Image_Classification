@@ -1,5 +1,5 @@
 import torch
-import tqdm
+from tqdm import tqdm
 
 
 class bcolors:
