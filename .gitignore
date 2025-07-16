@@ -7,11 +7,13 @@ __pycache__/
 # C extensions
 carsi-multisc/
 env_carsi/
+*.pth
 *.so
 patch_paths*.txt
 *.npy
 data/
 *.png
+*.csv
 src/preprocessing/__pycache__/
 # Distribution / packaging
 .Python

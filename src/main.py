@@ -1212,21 +1212,28 @@ def train_mil_classifier(
     )
 
 
-def test_mil_classifier(feature_level, pooling="attention"):
+def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18_patch_classifier_final_level3_20250710055900.pth"):
     model_path = os.path.join(
         os.getcwd(), "src", "models", "mil_classifier_attention_best_level3_resnet18_patch_classifier_final_level3_20250710055900.pth.pth")
-    model = MILClassifier(feature_dim=512, num_classes=2) # Feature dim for ResNet18
+    model = MILClassifier(feature_dim=512) 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
     model.to(device)
     feature_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "features", f"level_{feature_level}"
+        os.getcwd(), "data", "camelyon16", "features", f"level_{feature_level}", model_type
     )
-
+    print(f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Testing MIL classifier with features from {feature_dir}...")
     test_dataset = WSIMILTestDataset(feature_dir)
+    if len(test_dataset) == 0:
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No feature files found in: {feature_dir}")
+        return None
+
     # Using batch_size=1 for WSI because each "bag" is one WSI
     test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False)
+    for features, label, wsi_name in test_loader:
+        print(f"WSI: {wsi_name[0]}, Label: {label.item()}, Shape: {features.shape}")
+
 
     all_predictions = []
     all_true_labels = []
@@ -1259,7 +1266,10 @@ def test_mil_classifier(feature_level, pooling="attention"):
                 f"WSI: {wsi_name[0]}, True Label: {labels.cpu().item()}, Predicted Probability (Tumor): {probabilities:.4f}, Predicted Class: {predicted_label.item()}"
             )
 
-    # Calculate metrics
+    # Calculate metrics only if there are samples
+    if len(all_true_labels) == 0 or len(all_predictions) == 0:
+        print(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No test samples found. Check your test feature directory and data preparation.")
+        return None
     auc_score = roc_auc_score(all_true_labels, all_predictions)
     # Convert probabilities to binary predictions for other metrics
     binary_predictions = [1 if p > 0.5 else 0 for p in all_predictions]
