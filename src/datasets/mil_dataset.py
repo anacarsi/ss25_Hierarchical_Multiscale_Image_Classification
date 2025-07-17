@@ -4,7 +4,6 @@ import torch
 from torch.utils.data import Dataset, DataLoader
 import glob
 
-
 class bcolors:
     HEADER = "\033[95m"
     OKBLUE = "\033[94m"
@@ -37,26 +36,18 @@ class WSIMILDDataset(Dataset):
             label_path = os.path.join(feature_dir, f"{wsi_name}_label.npy")
 
             if os.path.exists(feature_path) and os.path.exists(label_path):
-                self.wsi_data_info.append(
-                    {
-                        "wsi_name": wsi_name,
-                        "feature_path": feature_path,
-                        "label_path": label_path,
-                    }
-                )
+                self.wsi_data_info.append({
+                    "wsi_name": wsi_name,
+                    "feature_path": feature_path,
+                    "label_path": label_path,
+                })
             else:
-                print(
-                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Missing file(s) for {wsi_name}"
-                )
+                print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Missing file(s) for {wsi_name}")
 
         if not self.wsi_data_info:
-            raise ValueError(
-                f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No valid data in {feature_dir}"
-            )
+            raise ValueError(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No valid data in {feature_dir}")
 
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} WSIMILDDataset loaded {len(self.wsi_data_info)} WSIs from {feature_dir}"
-        )
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} WSIMILDDataset loaded {len(self.wsi_data_info)} WSIs from {feature_dir}")
 
     def __len__(self):
         return len(self.wsi_data_info)
@@ -79,34 +70,24 @@ class WSIMILTestDataset(Dataset):
         self.feature_dir = feature_dir
         self.wsi_data_info = []
 
-        for feature_path in sorted(
-            glob.glob(os.path.join(feature_dir, "*_features.npy"))
-        ):
+        for feature_path in sorted(glob.glob(os.path.join(feature_dir, "*_features.npy"))):
             wsi_name = os.path.basename(feature_path).replace("_features.npy", "")
             label_path = os.path.join(feature_dir, f"{wsi_name}_label.npy")
 
             if not os.path.exists(label_path):
-                print(
-                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Skipping {wsi_name}, missing label."
-                )
+                print(f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Skipping {wsi_name}, missing label.")
                 continue
 
-            self.wsi_data_info.append(
-                {
-                    "wsi_name": wsi_name,
-                    "feature_path": feature_path,
-                    "label_path": label_path,
-                }
-            )
+            self.wsi_data_info.append({
+                "wsi_name": wsi_name,
+                "feature_path": feature_path,
+                "label_path": label_path,
+            })
 
         if not self.wsi_data_info:
-            raise ValueError(
-                f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No test data in {feature_dir}"
-            )
+            raise ValueError(f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No test data in {feature_dir}")
 
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} WSIMILTestDataset loaded {len(self.wsi_data_info)} WSIs."
-        )
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} WSIMILTestDataset loaded {len(self.wsi_data_info)} WSIs.")
 
     def __len__(self):
         return len(self.wsi_data_info)
@@ -121,22 +102,17 @@ class WSIMILTestDataset(Dataset):
         return features_tensor, label_tensor, info["wsi_name"]
 
 
-def get_mil_dataloaders(train_dir, val_dir, test_dir=None, batch_size=1):
-    train_dataset = WSIMILDDataset(train_dir)
-    val_dataset = WSIMILDDataset(val_dir)
+def get_mil_dataloaders(feature_base_dir_train, feature_base_dir_val, feature_base_dir_test, batch_size=1):
+    train_dataset = WSIMILDDataset(feature_base_dir_train)
+    val_dataset = WSIMILDDataset(feature_base_dir_val)
 
-    train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True
-    )
-    val_loader = DataLoader(
-        val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True
-    )
+    train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True)
 
     test_loader = None
-    if test_dir is not None:
-        test_dataset = WSIMILTestDataset(test_dir)
-        test_loader = DataLoader(
-            test_dataset, batch_size=1, shuffle=False, pin_memory=True
-        )
+    if feature_base_dir_test is not None:
+        test_dataset = WSIMILTestDataset(feature_base_dir_test)
+        test_loader = DataLoader(test_dataset, batch_size=1, shuffle=False, pin_memory=True)
 
     return train_loader, val_loader, test_loader
+

@@ -28,7 +28,7 @@ from models.resnet import (
     ResNet18ClassifierSIMCLR,
 )
 from datasets.patch_dataset import PatchDataset
-from datasets.mildataset import WSIMILTestDataset, get_mil_dataloaders
+from src.datasets.mil_dataset import WSIMILTestDataset, get_mil_dataloaders
 from models.mil_classifier import MILClassifier
 from utils.evaluation_FROC import (
     computeEvaluationMask,
@@ -605,7 +605,7 @@ def train_mil_classifier(
         batch_size=1,
     )
 
-    feature_dim = 512 if model_type == "resnet18" else 2048
+    feature_dim = 512 if model_type.startswith("resnet18") else 2048
     model = MILClassifier(feature_dim=feature_dim, pooling=pooling).to(device)
 
     # Optimizer: All parameters of the MILClassifier are trainable.
@@ -745,7 +745,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
     - dict: Test metrics (AUC, accuracy, precision, recall, f1_score).
     """
     model_path = get_latest_mil_model_path()
-    feature_dim = 512 if model_type == "resnet18" else 2048
+    feature_dim = 512 if model_type.startswith("resnet18") else 2048
     model = MILClassifier(feature_dim=feature_dim, pooling=pooling)
     print(model)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
