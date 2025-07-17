@@ -1,6 +1,7 @@
 from collections import defaultdict
 import os
 import sys
+import csv
 import argparse
 import requests
 from tqdm import tqdm
@@ -578,6 +579,7 @@ def train_mil_classifier(
         "features",
         f"level_{feature_level}",
         model_type,
+        "train",
     )
     feature_base_dir_val = os.path.join(
         os.getcwd(),
@@ -629,97 +631,105 @@ def train_mil_classifier(
     # For consistent naming
     base_model_name = f"mil_resnet18_level{feature_level}"
 
-    for epoch in range(epochs):
-        # ----------- Train -----------
-        model.train()
-        train_loss = 0.0
-        train_preds, train_labels = [], []
-        for bags, labels in tqdm(train_loader, desc=f"MIL Epoch {epoch+1} Training"):
-            bags, labels = bags[0].to(
-                device
-            ), labels.to(  # bags[0] because DataLoader returns (batch_size, bag_tensor)
-                device
-            )
+    log_filename = f"src/models/{base_model_name}_log.csv"
+    log_fields = ["epoch", "train_loss", "train_auc", "val_loss", "val_auc"]
+    with open(log_filename, "w", newline='') as log_file:
+        log_writer = csv.writer(log_file)
+        log_writer.writerow(log_fields)
 
-            optimizer.zero_grad()
-            with torch.cuda.amp.autocast():  # mixed prec bec MIL can be memory intensive
-                logits, _ = model(bags)
-                loss = criterion(
-                    logits.unsqueeze(0), labels
-                )  # unsqueeze(0) for batch size 1
-
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-
-            train_loss += loss.item()
-            train_preds.append(logits.softmax(dim=-1)[1].item())  # positive class score
-            train_labels.append(labels.item())
-
-        train_auc = roc_auc_score(train_labels, train_preds)
-        train_loss /= len(train_loader)
-
-        # ----------- Validation -----------
-        model.eval()
-        val_loss = 0.0
-        val_preds, val_labels = [], []
-        with torch.no_grad():
-            for bags, labels in tqdm(
-                val_loader, desc=f"MIL Epoch {epoch+1} Validation"
-            ):
-                bags, labels = bags[0].to(device), labels.to(device)
-                with torch.cuda.amp.autocast():  # Mixed precision
-                    logits, _ = model(bags)
-                    loss = criterion(logits.unsqueeze(0), labels)
-
-                val_loss += loss.item()
-                val_preds.append(logits.softmax(dim=-1)[1].item())
-                val_labels.append(labels.item())
-
-        val_auc = roc_auc_score(val_labels, val_preds)
-        val_loss /= len(val_loader)
-
-        print(
-            f"{bcolors.INFO}[Epoch {epoch+1:03d}] Train Loss: {train_loss:.4f}, Train AUC: {train_auc:.4f}, "
-            f"Val Loss: {val_loss:.4f}, Val AUC: {val_auc:.4f}{bcolors.ENDC}"
-        )
-
-        # Learning rate scheduler step
-        scheduler.step(val_auc)
-
-        # ----------- Early Stopping Logic -----------
-        if val_auc > best_auc:
-            best_auc = val_auc
-            best_model_wts = copy.deepcopy(model.state_dict())
-            early_stop_counter = 0
-            best_model_path = f"src/models/{base_model_name}_best.pth"
-            torch.save(model.state_dict(), best_model_path)
-            print(
-                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Best validation AUC achieved. Model saved to {best_model_path}"
-            )
-        else:
-            early_stop_counter += 1
-            if early_stop_counter >= patience:
-                print(
-                    f"{bcolors.INFO}[Early Stopping]{bcolors.ENDC} No improvement for {patience} epochs. Stopping at epoch {epoch+1}."
+        for epoch in range(epochs):
+            # ----------- Train -----------
+            model.train()
+            train_loss = 0.0
+            train_preds, train_labels = [], []
+            for bags, labels in tqdm(train_loader, desc=f"MIL Epoch {epoch+1} Training"):
+                bags, labels = bags[0].to(
+                    device
+                ), labels.to(
+                    device
                 )
-                break
 
-        # Save checkpoint every 10 epochs (or adjust frequency)
-        if (epoch + 1) % 10 == 0:
-            checkpoint_path = f"src/models/{base_model_name}_epoch{epoch+1}.pth"
-            torch.save(model.state_dict(), checkpoint_path)
+                optimizer.zero_grad()
+                with torch.cuda.amp.autocast():
+                    logits, _ = model(bags)
+                    loss = criterion(
+                        logits.unsqueeze(0), labels
+                    )
+
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+
+                train_loss += loss.item()
+                train_preds.append(logits.softmax(dim=-1)[1].item())
+                train_labels.append(labels.item())
+
+            train_auc = roc_auc_score(train_labels, train_preds)
+            train_loss /= len(train_loader)
+
+            # ----------- Validation -----------
+            model.eval()
+            val_loss = 0.0
+            val_preds, val_labels = [], []
+            with torch.no_grad():
+                for bags, labels in tqdm(
+                    val_loader, desc=f"MIL Epoch {epoch+1} Validation"
+                ):
+                    bags, labels = bags[0].to(device), labels.to(device)
+                    with torch.cuda.amp.autocast():
+                        logits, _ = model(bags)
+                        loss = criterion(logits.unsqueeze(0), labels)
+
+                    val_loss += loss.item()
+                    val_preds.append(logits.softmax(dim=-1)[1].item())
+                    val_labels.append(labels.item())
+
+            val_auc = roc_auc_score(val_labels, val_preds)
+            val_loss /= len(val_loader)
+
             print(
-                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checkpoint saved: {checkpoint_path}"
+                f"{bcolors.INFO}[Epoch {epoch+1:03d}] Train Loss: {train_loss:.4f}, Train AUC: {train_auc:.4f}, "
+                f"Val Loss: {val_loss:.4f}, Val AUC: {val_auc:.4f}{bcolors.ENDC}"
             )
+            log_writer.writerow([epoch+1, f"{train_loss:.4f}", f"{train_auc:.4f}", f"{val_loss:.4f}", f"{val_auc:.4f}"])
+            log_file.flush()
 
-    # Load best model weights at the end
-    model.load_state_dict(best_model_wts)
-    final_model_path = f"src/models/{base_model_name}_final.pth"
-    torch.save(model.state_dict(), final_model_path)
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Final best model saved to {final_model_path}. Best Val AUC: {best_auc:.4f}"
-    )
+            # Learning rate scheduler step
+            scheduler.step(val_auc)
+
+            # ----------- Early Stopping Logic -----------
+            if val_auc > best_auc:
+                best_auc = val_auc
+                best_model_wts = copy.deepcopy(model.state_dict())
+                early_stop_counter = 0
+                best_model_path = f"src/models/{base_model_name}_best.pth"
+                torch.save(model.state_dict(), best_model_path)
+                print(
+                    f"{bcolors.INFO}[INFO]{bcolors.ENDC} Best validation AUC achieved. Model saved to {best_model_path}"
+                )
+            else:
+                early_stop_counter += 1
+                if early_stop_counter >= patience:
+                    print(
+                        f"{bcolors.INFO}[Early Stopping]{bcolors.ENDC} No improvement for {patience} epochs. Stopping at epoch {epoch+1}."
+                    )
+                    break
+
+            # Save checkpoint every 10 epochs (or adjust frequency)
+            if (epoch + 1) % 10 == 0:
+                checkpoint_path = f"src/models/{base_model_name}_epoch{epoch+1}.pth"
+                torch.save(model.state_dict(), checkpoint_path)
+                print(
+                    f"{bcolors.INFO}[INFO]{bcolors.ENDC} Checkpoint saved: {checkpoint_path}"
+                )
+
+        # Load best model weights at the end
+        model.load_state_dict(best_model_wts)
+        final_model_path = f"src/models/{base_model_name}_final.pth"
+        torch.save(model.state_dict(), final_model_path)
+        print(
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Final best model saved to {final_model_path}. Best Val AUC: {best_auc:.4f}"
+        )
 
 
 def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18"):
@@ -1097,13 +1107,12 @@ def extract_features(
         )
         return
 
-    transform = T.Compose(
-        [
-            T.Resize((224, 224)),
-            T.ToTensor(),
-            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ]
-    )
+    transform = T.Compose([
+        T.Resize((224, 224)),
+        T.ToTensor(),
+        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+    ])
+
 
     sets = ["train", "val", "test"]
     for split in sets:
@@ -1121,7 +1130,7 @@ def extract_features(
         )
 
         dataset = PatchDataset(patch_dir, transform=transform)
-        loader = torch.utils.data.DataLoader(
+        loader = torch.utils.data.DataLoader( # get_dataloaders is opnly for training data augmentation. in feature extraction we don't need it
             dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8
         )
 
@@ -1501,7 +1510,6 @@ def main():
         extract_features(
             level=int(args.patch_level) if args.patch_level != "all" else 3,
             model_type=args.model_type,
-            test=args.test_patch == "test",
         )  # default to level 3 if all
 
     # Train model
@@ -1539,7 +1547,7 @@ def main():
                 f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Features must be extracted before training MIL classifier."
             )
             return
-        train_mil_classifier(feature_level=int(args.patch_level), pooling="attention")
+        train_mil_classifier(feature_level=int(args.patch_level), pooling="attention", model_type=args.model_type)
 
     # Test MIL classifier
     if args.test_mil:
