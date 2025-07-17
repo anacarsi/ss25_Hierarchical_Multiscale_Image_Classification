@@ -157,10 +157,10 @@ def download_dataset(remote=False):
 
     # Define the target directories
     train_img_dir = os.path.join(camelyon_dir, "train", "img")
-    val_img_dir = os.path.join(camelyon_dir, "val", "img")
-    test_img_dir = os.path.join(camelyon_dir, "test", "img")
+    val_img_dir = os.path.join(camelyon_dir, "val_new", "img")
+    test_img_dir = os.path.join(camelyon_dir, "test_new", "img")
     train_mask_dir = os.path.join(camelyon_dir, "train", "mask")
-    test_mask_dir = os.path.join(camelyon_dir, "test", "mask")
+    test_mask_dir = os.path.join(camelyon_dir, "test_new", "mask")
 
     # Mapping of CAMELYON16_FILES keys to their target directories
     download_map = {
@@ -348,7 +348,7 @@ def get_dataloaders(patch_dir, batch_size=BATCH_SIZE, balanced=False):
     - tuple: (train_loader, val_loader, train_dataset, val_dataset)
     """
     train_dir = os.path.join(patch_dir, "train")
-    val_dir = os.path.join(patch_dir, "val")
+    val_dir = os.path.join(patch_dir, "val_new")
     train_slides = [
         d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))
     ]
@@ -557,6 +557,7 @@ def train_resnet_classifier(
         )
 
 
+
 def train_mil_classifier(
     feature_level=3,
     pooling="attention",
@@ -594,7 +595,7 @@ def train_mil_classifier(
         "features",
         f"level_{feature_level}",
         model_type,
-        "val",
+        "val_new",
     )
     if not os.path.exists(feature_base_dir_train) or not os.path.exists(
         feature_base_dir_val
@@ -769,7 +770,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
         "features",
         f"level_{feature_level}",
         model_type,
-        "test",
+        "test_new",
     )
     feature_base_dir_train = os.path.join(
         os.getcwd(),
@@ -787,7 +788,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
         "features",
         f"level_{feature_level}",
         model_type,
-        "val",
+        "val_new",
     )
     print(
         f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Testing MIL classifier with features from {feature_dir}..."
@@ -798,15 +799,18 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
             f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No feature files found in: {feature_dir}"
         )
         return None
-    _, _, test_loader = get_mil_dataloaders(
+    train_loader, val_loader, test_loader = get_mil_dataloaders(
         feature_base_dir_train=feature_base_dir_train,
         feature_base_dir_val=feature_base_dir_val,
         feature_base_dir_test=feature_dir,
         batch_size=1,
     )
+    # feature, label. wsi _ name not
+    # for i, j in train_loader:
+        # print(f"WSI: {j}, Label: {i}, Shape: {i.shape}")
 
-    for features, label, wsi_name in test_loader:
-        print(f"WSI: {wsi_name[0]}, Label: {label.item()}, Shape: {features.shape}")
+    # for features, label, wsi_name in train_loader:
+        # print(f"WSI: {wsi_name[0]}, Label: {label.item()}, Shape: {features.shape}")
 
     all_predictions = []
     all_true_labels = []
@@ -815,7 +819,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Starting model testing...")
 
     with torch.no_grad():
-        for features, labels, wsi_name in test_loader:
+        for features, labels, wsi_name in val_loader:
             # In our DataLoader, batch_size=1, so features will be a list containing one tensor
             features = features.squeeze(0).to(device)
             labels = labels.to(device)
@@ -908,23 +912,23 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True):
             ),
         },
         {
-            "name": "val",
-            "wsi_dir": os.path.join(os.getcwd(), "data", "camelyon16", "val", "img"),
+            "name": "val_new",
+            "wsi_dir": os.path.join(os.getcwd(), "data", "camelyon16", "val_new", "img"),
             "annot_dir": os.path.join(
-                os.getcwd(), "data", "camelyon16", "val", "mask", "annotations"
+                os.getcwd(), "data", "camelyon16", "val_new", "mask", "annotations"
             ),
             "patch_dir": os.path.join(
-                os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "val"
+                os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "val_new"
             ),
         },
         {
-            "name": "test",
-            "wsi_dir": os.path.join(os.getcwd(), "data", "camelyon16", "test", "img"),
+            "name": "test_new",
+            "wsi_dir": os.path.join(os.getcwd(), "data", "camelyon16", "test_new", "img"),
             "annot_dir": os.path.join(
-                os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
+                os.getcwd(), "data", "camelyon16", "test_new", "mask", "annotations"
             ),
             "patch_dir": os.path.join(
-                os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "test"
+                os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "test_new"
             ),
         },
     ]
@@ -1149,7 +1153,7 @@ def extract_features(
         ]
     )
 
-    sets = ["train", "val", "test"]
+    sets = ["train", "val_new", "test_new"]
     for split in sets:
         patch_dir = os.path.join(
             os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", split
@@ -1287,10 +1291,10 @@ def prepare_data():
 
     # Extract testing masks
     test_zip = os.path.join(
-        os.getcwd(), "data", "camelyon16", "test", "mask", "lesion_annotations.zip"
+        os.getcwd(), "data", "camelyon16", "test_new", "mask", "lesion_annotations.zip"
     )
     test_extract_to = os.path.join(
-        os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
+        os.getcwd(), "data", "camelyon16", "test_new", "mask", "annotations"
     )
     if not os.path.exists(test_zip):
         print(
@@ -1358,7 +1362,7 @@ def create_validation_set():
         )
         return
 
-    val_dir = os.path.join(os.getcwd(), "data", "camelyon16", "val", "img")
+    val_dir = os.path.join(os.getcwd(), "data", "camelyon16", "val_new", "img")
     os.makedirs(val_dir, exist_ok=True)
 
     slides = [f for f in os.listdir(train_dir) if f.endswith(".tif")]
@@ -1386,7 +1390,7 @@ def create_validation_set():
         os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
     )
     annot_val_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "val", "mask", "annotations"
+        os.getcwd(), "data", "camelyon16", "val_new", "mask", "annotations"
     )
     os.makedirs(annot_val_dir, exist_ok=True)
 
@@ -1425,7 +1429,7 @@ def main():
     parser.add_argument(
         "--test_patch",
         type=str,
-        default="test",
+        default="test_new",
     )
     parser.add_argument("-prep", "--prepare", action="store_true", help="Prepare data")
     parser.add_argument(
@@ -1614,7 +1618,7 @@ def main():
             f"{bcolors.INFO}[INFO]{bcolors.ENDC} Running CAMELYON16 evaluation script."
         )
         mask_folder_for_eval = os.path.join(
-            os.getcwd(), "data", "camelyon16", "test", "mask"
+            os.getcwd(), "data", "camelyon16", "test_new", "mask"
         )
         results_folder_for_eval = os.path.join(
             os.getcwd(), "models", "first_model", "model_predictions_csv"

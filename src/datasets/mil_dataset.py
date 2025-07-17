@@ -68,7 +68,7 @@ class WSIMILDDataset(Dataset):
 
         features_tensor = torch.tensor(features, dtype=torch.float32)
         label_tensor = torch.tensor(label, dtype=torch.long)
-        return features_tensor, label_tensor
+        return features_tensor, label_tensor, info["wsi_name"]
 
 
 class WSIMILTestDataset(Dataset):
@@ -128,7 +128,7 @@ def get_mil_dataloaders(
     val_dataset = WSIMILDDataset(feature_base_dir_val)
 
     train_loader = DataLoader(
-        train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True
+        train_dataset, batch_size=1, shuffle=True, pin_memory=True
     )
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True
@@ -140,5 +140,6 @@ def get_mil_dataloaders(
         test_loader = DataLoader(
             test_dataset, batch_size=1, shuffle=False, pin_memory=True
         )
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} len: {len(train_loader.dataset)}, {len(val_loader.dataset)}, {len(test_loader.dataset) if test_loader else 0}")
 
     return train_loader, val_loader, test_loader
