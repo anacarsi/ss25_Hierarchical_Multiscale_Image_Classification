@@ -44,12 +44,14 @@ import zipfile
 import pandas as pd
 from train import train_resnet
 from utils.structure import get_latest_mil_model_path
+
 """"
 os.add_dll_directory(
     r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
 )
 """
 import openslide
+
 
 class bcolors:
     HEADER = "\033[95m"
@@ -152,7 +154,7 @@ def download_dataset(remote=False):
     - remote (bool): If True, download all files; if False, download only a subset for testing.
     """
     camelyon_dir = os.path.join(os.getcwd(), "data", "camelyon16")
-    
+
     # Define the target directories
     train_img_dir = os.path.join(camelyon_dir, "train", "img")
     val_img_dir = os.path.join(camelyon_dir, "val", "img")
@@ -350,11 +352,15 @@ def get_dataloaders(patch_dir, batch_size=BATCH_SIZE, balanced=False):
     train_slides = [
         d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))
     ]
-    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Found {len(train_slides)} training slides in {train_dir}.")
+    print(
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Found {len(train_slides)} training slides in {train_dir}."
+    )
     val_slides = [
         d for d in os.listdir(val_dir) if os.path.isdir(os.path.join(val_dir, d))
     ]
-    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Found {len(val_slides)} validation slides in {val_dir}.")
+    print(
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Found {len(val_slides)} validation slides in {val_dir}."
+    )
     print(f"For example, found slide: {val_slides[0]} in {val_dir}.")
     print(
         f"{bcolors.INFO}[INFO]{bcolors.ENDC} Found {len(train_slides) + len(val_slides)} slides in {patch_dir}."
@@ -633,7 +639,7 @@ def train_mil_classifier(
 
     log_filename = f"src/models/{base_model_name}_log.csv"
     log_fields = ["epoch", "train_loss", "train_auc", "val_loss", "val_auc"]
-    with open(log_filename, "w", newline='') as log_file:
+    with open(log_filename, "w", newline="") as log_file:
         log_writer = csv.writer(log_file)
         log_writer.writerow(log_fields)
 
@@ -642,19 +648,15 @@ def train_mil_classifier(
             model.train()
             train_loss = 0.0
             train_preds, train_labels = [], []
-            for bags, labels in tqdm(train_loader, desc=f"MIL Epoch {epoch+1} Training"):
-                bags, labels = bags[0].to(
-                    device
-                ), labels.to(
-                    device
-                )
+            for bags, labels in tqdm(
+                train_loader, desc=f"MIL Epoch {epoch+1} Training"
+            ):
+                bags, labels = bags[0].to(device), labels.to(device)
 
                 optimizer.zero_grad()
                 with torch.cuda.amp.autocast():
                     logits, _ = model(bags)
-                    loss = criterion(
-                        logits.unsqueeze(0), labels
-                    )
+                    loss = criterion(logits.unsqueeze(0), labels)
 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
@@ -691,7 +693,15 @@ def train_mil_classifier(
                 f"{bcolors.INFO}[Epoch {epoch+1:03d}] Train Loss: {train_loss:.4f}, Train AUC: {train_auc:.4f}, "
                 f"Val Loss: {val_loss:.4f}, Val AUC: {val_auc:.4f}{bcolors.ENDC}"
             )
-            log_writer.writerow([epoch+1, f"{train_loss:.4f}", f"{train_auc:.4f}", f"{val_loss:.4f}", f"{val_auc:.4f}"])
+            log_writer.writerow(
+                [
+                    epoch + 1,
+                    f"{train_loss:.4f}",
+                    f"{train_auc:.4f}",
+                    f"{val_loss:.4f}",
+                    f"{val_auc:.4f}",
+                ]
+            )
             log_file.flush()
 
             # Learning rate scheduler step
@@ -761,6 +771,24 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
         model_type,
         "test",
     )
+    feature_base_dir_train = os.path.join(
+        os.getcwd(),
+        "data",
+        "camelyon16",
+        "features",
+        f"level_{feature_level}",
+        model_type,
+        "train",
+    )
+    feature_base_dir_val = os.path.join(
+        os.getcwd(),
+        "data",
+        "camelyon16",
+        "features",
+        f"level_{feature_level}",
+        model_type,
+        "val",
+    )
     print(
         f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Testing MIL classifier with features from {feature_dir}..."
     )
@@ -770,7 +798,13 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
             f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No feature files found in: {feature_dir}"
         )
         return None
-    test_loader = get_mil_dataloaders(feature_base_dir_test=feature_dir, batch_size=1)
+    _, _, test_loader = get_mil_dataloaders(
+    feature_base_dir_train=feature_base_dir_train,
+    feature_base_dir_val=feature_base_dir_val,
+    feature_base_dir_test=feature_dir,
+    batch_size=1,
+    )
+
     for features, label, wsi_name in test_loader:
         print(f"WSI: {wsi_name[0]}, Label: {label.item()}, Shape: {features.shape}")
 
@@ -1107,12 +1141,13 @@ def extract_features(
         )
         return
 
-    transform = T.Compose([
-        T.Resize((224, 224)),
-        T.ToTensor(),
-        T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-    ])
-
+    transform = T.Compose(
+        [
+            T.Resize((224, 224)),
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
 
     sets = ["train", "val", "test"]
     for split in sets:
@@ -1130,7 +1165,7 @@ def extract_features(
         )
 
         dataset = PatchDataset(patch_dir, transform=transform)
-        loader = torch.utils.data.DataLoader( # get_dataloaders is opnly for training data augmentation. in feature extraction we don't need it
+        loader = torch.utils.data.DataLoader(  # get_dataloaders is opnly for training data augmentation. in feature extraction we don't need it
             dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8
         )
 
@@ -1537,9 +1572,7 @@ def main():
                 f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patches must be extracted before training."
             )
             return
-        train_resnet_classifier(
-            level=int(args.patch_level), strategy=args.strategy
-        )
+        train_resnet_classifier(level=int(args.patch_level), strategy=args.strategy)
 
     if args.train_mil:
         if not features_extracted(patch_level=args.patch_level):
@@ -1547,7 +1580,11 @@ def main():
                 f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Features must be extracted before training MIL classifier."
             )
             return
-        train_mil_classifier(feature_level=int(args.patch_level), pooling="attention", model_type=args.model_type)
+        train_mil_classifier(
+            feature_level=int(args.patch_level),
+            pooling="attention",
+            model_type=args.model_type,
+        )
 
     # Test MIL classifier
     if args.test_mil:
@@ -1556,7 +1593,11 @@ def main():
                 f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Features must be extracted before testing MIL classifier."
             )
             return
-        test_mil_classifier(feature_level=int(args.patch_level), pooling="attention")
+        test_mil_classifier(
+            feature_level=int(args.patch_level),
+            pooling="attention",
+            model_type=args.model_type,
+        )
 
     if args.prepare:
         prepare_data()

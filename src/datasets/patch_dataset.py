@@ -91,7 +91,9 @@ class PatchDataset(Dataset):
                     f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} No patches found in {root_dir}."
                 )
             for label, paths in class_to_paths.items():
-                print(f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Adding {len(paths)} paths for label {label}")
+                print(
+                    f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Adding {len(paths)} paths for label {label}"
+                )
                 if max_samples:
                     paths = random.sample(paths, min(len(paths), max_samples))
                 self.image_paths.extend(paths)

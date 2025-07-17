@@ -36,10 +36,11 @@ def train_resnet(
     scaler = torch.cuda.amp.GradScaler()
 
     import csv
+
     log_filename = f"{base_model_path}_log.csv"
     log_fields = ["epoch", "train_loss", "train_acc", "val_acc"]
     # Create log file and write header
-    with open(log_filename, "w", newline='') as log_file:
+    with open(log_filename, "w", newline="") as log_file:
         log_writer = csv.writer(log_file)
         log_writer.writerow(log_fields)
 
@@ -63,7 +64,9 @@ def train_resnet(
             model.eval()
             val_correct = 0
             with torch.no_grad():
-                for imgs, labels, _ in tqdm(val_loader, desc=f"Epoch {epoch+1} Validation"):
+                for imgs, labels, _ in tqdm(
+                    val_loader, desc=f"Epoch {epoch+1} Validation"
+                ):
                     imgs, labels = imgs.to(device), labels.to(device)
                     outputs = model(imgs)
                     preds = outputs.argmax(1)
@@ -74,7 +77,9 @@ def train_resnet(
                 f"Epoch {epoch+1}/{num_epochs}, Train Loss: {total_loss:.4f}, Train Acc: {train_acc:.4f}, Val Acc: {val_acc:.4f}"
             )
             # Write log row
-            log_writer.writerow([epoch+1, f"{total_loss:.4f}", f"{train_acc:.4f}", f"{val_acc:.4f}"])
+            log_writer.writerow(
+                [epoch + 1, f"{total_loss:.4f}", f"{train_acc:.4f}", f"{val_acc:.4f}"]
+            )
             log_file.flush()
             scheduler.step(val_acc)
 
