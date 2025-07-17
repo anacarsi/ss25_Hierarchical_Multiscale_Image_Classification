@@ -799,10 +799,10 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
         )
         return None
     _, _, test_loader = get_mil_dataloaders(
-    feature_base_dir_train=feature_base_dir_train,
-    feature_base_dir_val=feature_base_dir_val,
-    feature_base_dir_test=feature_dir,
-    batch_size=1,
+        feature_base_dir_train=feature_base_dir_train,
+        feature_base_dir_val=feature_base_dir_val,
+        feature_base_dir_test=feature_dir,
+        batch_size=1,
     )
 
     for features, label, wsi_name in test_loader:
