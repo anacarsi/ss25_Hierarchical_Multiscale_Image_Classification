@@ -492,7 +492,7 @@ def train_resnet_classifier(
         model = ResNet18ClassifierSIMCLR(
             pretrained_weights_path=pretrained_simclr_path, freeze_encoder=True
         ).to(device)
-        criterion = nn.CrossEntropyLoss(weight=weight_tensor)
+        criterion = nn.CrossEntropyLoss(weight=weight_tensor, label_smoothing=0.1)
         optimizer = Adam(model.parameters(), lr=5e-4, weight_decay=1e-5)
         scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.1, patience=3)
         train_resnet(
@@ -1477,7 +1477,7 @@ def main():
         "--strategy",
         type=str,
         default="self_supervised",
-        choices=["balanced", "weighted_loss", "self_supervised"],
+        choices=["balanced", "weighted_loss", "self_supervised", "baseline"],
         help="Training strategy for ResNet classifier",
     )
     parser.add_argument(

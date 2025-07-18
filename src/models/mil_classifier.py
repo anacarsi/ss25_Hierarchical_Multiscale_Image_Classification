@@ -50,7 +50,10 @@ class MILClassifier(nn.Module):
         else:
             raise ValueError("Unknown pooling: choose from 'attention', 'mean', 'max'")
         self.classifier = nn.Sequential(
-            nn.Linear(feature_dim, 128), nn.ReLU(), nn.Linear(128, num_classes)
+            nn.Linear(feature_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(p=0.5),  # try 0.3–0.5
+            nn.Linear(128, num_classes),
         )
 
     def forward(self, bag):
