@@ -128,7 +128,7 @@ def get_mil_dataloaders(
     val_dataset = WSIMILDDataset(feature_base_dir_val)
 
     train_loader = DataLoader(
-        train_dataset, batch_size=1, shuffle=True, pin_memory=True
+        train_dataset, batch_size=batch_size, shuffle=True, pin_memory=True
     )
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False, pin_memory=True

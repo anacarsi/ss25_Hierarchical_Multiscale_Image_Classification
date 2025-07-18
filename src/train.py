@@ -1,5 +1,6 @@
 import torch
 from tqdm import tqdm
+import csv
 
 
 class bcolors:
@@ -35,11 +36,8 @@ def train_resnet(
     early_stop_patience = 10
     scaler = torch.cuda.amp.GradScaler()
 
-    import csv
-
     log_filename = f"{base_model_path}_log.csv"
     log_fields = ["epoch", "train_loss", "train_acc", "val_acc"]
-    # Create log file and write header
     with open(log_filename, "w", newline="") as log_file:
         log_writer = csv.writer(log_file)
         log_writer.writerow(log_fields)
@@ -69,6 +67,8 @@ def train_resnet(
                 ):
                     imgs, labels = imgs.to(device), labels.to(device)
                     outputs = model(imgs)
+                    for i in range(imgs.size(0)):
+                        print(f"Validation image name: {_[i]}")
                     preds = outputs.argmax(1)
                     val_correct += (preds == labels).sum().item()
             val_acc = val_correct / len(val_loader.dataset)
@@ -100,5 +100,5 @@ def train_resnet(
             if (epoch + 1) % 10 == 0:
                 torch.save(model.state_dict(), f"{base_model_path}_epoch{epoch+1}.pth")
 
-        torch.save(model.state_dict(), f"{base_model_path}_final.pth")
+        torch.save(model.state_dict(), f"{base_model_path}__val_new_final.pth")
         print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Final model saved.")

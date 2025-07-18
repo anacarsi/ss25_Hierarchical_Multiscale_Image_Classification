@@ -157,10 +157,10 @@ def download_dataset(remote=False):
 
     # Define the target directories
     train_img_dir = os.path.join(camelyon_dir, "train", "img")
-    val_img_dir = os.path.join(camelyon_dir, "val_new", "img")
-    test_img_dir = os.path.join(camelyon_dir, "test_new", "img")
+    val_img_dir = os.path.join(camelyon_dir, "test", "img")
+    test_img_dir = os.path.join(camelyon_dir, "val", "img")
     train_mask_dir = os.path.join(camelyon_dir, "train", "mask")
-    test_mask_dir = os.path.join(camelyon_dir, "test_new", "mask")
+    test_mask_dir = os.path.join(camelyon_dir, "val", "mask")
 
     # Mapping of CAMELYON16_FILES keys to their target directories
     download_map = {
@@ -348,7 +348,7 @@ def get_dataloaders(patch_dir, batch_size=BATCH_SIZE, balanced=False):
     - tuple: (train_loader, val_loader, train_dataset, val_dataset)
     """
     train_dir = os.path.join(patch_dir, "train")
-    val_dir = os.path.join(patch_dir, "val_new")
+    val_dir = os.path.join(patch_dir, "test")
     train_slides = [
         d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))
     ]
@@ -407,20 +407,20 @@ def get_dataloaders(patch_dir, batch_size=BATCH_SIZE, balanced=False):
     n_tumor = len(tumor_indices)
     n_normal = len(normal_indices)
 
-    if n_tumor > 0 and n_normal > 0:
-        n_min = min(n_tumor, n_normal)
-        rng = np.random.default_rng(42)
-        tumor_sel = rng.choice(tumor_indices, n_min, replace=False)
-        normal_sel = rng.choice(normal_indices, n_min, replace=False)
-        selected_indices = np.concatenate([tumor_sel, normal_sel])
-        val_dataset = Subset(val_dataset, selected_indices)
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Validation set balanced: {n_min} normal and {n_min} tumor patches."
-        )
-    else:
-        print(
-            f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Could not balance validation set: tumor patches = {n_tumor}, normal patches = {n_normal}."
-        )
+    # if n_tumor > 0 and n_normal > 0:
+        # n_min = min(n_tumor, n_normal)
+        # rng = np.random.default_rng(42)
+        # tumor_sel = rng.choice(tumor_indices, n_min, replace=False)
+        # normal_sel = rng.choice(normal_indices, n_min, replace=False)
+        # selected_indices = np.concatenate([tumor_sel, normal_sel])
+        # val_dataset = Subset(val_dataset, selected_indices)
+        # print(
+            # f"{bcolors.INFO}[INFO]{bcolors.ENDC} Validation set balanced: {n_min} normal and {n_min} tumor patches."
+        # )
+    # else:
+    print(
+        f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Did not balance validation set: tumor patches = {n_tumor}, normal patches = {n_normal}."
+    )
 
     train_loader = DataLoader(
         train_dataset,
@@ -495,7 +495,7 @@ def train_resnet_classifier(
         criterion = nn.CrossEntropyLoss(weight=weight_tensor)
         optimizer = Adam(model.parameters(), lr=5e-4, weight_decay=1e-5)
         scheduler = ReduceLROnPlateau(
-            optimizer, mode="max", factor=0.1, patience=3, verbose=True
+            optimizer, mode="max", factor=0.1, patience=3
         )
         train_resnet(
             model,
@@ -517,7 +517,7 @@ def train_resnet_classifier(
         ).to(device)
         optimizer = Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
         scheduler = ReduceLROnPlateau(
-            optimizer, mode="max", factor=0.1, patience=5, verbose=True
+            optimizer, mode="max", factor=0.1, patience=5
         )
         train_resnet(
             model,
@@ -541,7 +541,7 @@ def train_resnet_classifier(
         )
         optimizer = Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
         scheduler = ReduceLROnPlateau(
-            optimizer, mode="max", factor=0.1, patience=5, verbose=True
+            optimizer, mode="max", factor=0.1, patience=5
         )
         train_resnet(
             model,
@@ -561,7 +561,7 @@ def train_resnet_classifier(
 def train_mil_classifier(
     feature_level=3,
     pooling="attention",
-    epochs=100,
+    epochs=50,
     lr=1e-4,
     patience=10,
     model_type="resnet18",
@@ -595,7 +595,7 @@ def train_mil_classifier(
         "features",
         f"level_{feature_level}",
         model_type,
-        "val_new",
+        "test",
     )
     if not os.path.exists(feature_base_dir_train) or not os.path.exists(
         feature_base_dir_val
@@ -625,7 +625,6 @@ def train_mil_classifier(
         mode="max",
         factor=0.1,
         patience=patience // 2,
-        verbose=True,
         threshold=0.001,
     )
 
@@ -649,7 +648,7 @@ def train_mil_classifier(
             model.train()
             train_loss = 0.0
             train_preds, train_labels = [], []
-            for bags, labels in tqdm(
+            for bags, labels, _ in tqdm(
                 train_loader, desc=f"MIL Epoch {epoch+1} Training"
             ):
                 bags, labels = bags[0].to(device), labels.to(device)
@@ -675,7 +674,7 @@ def train_mil_classifier(
             val_loss = 0.0
             val_preds, val_labels = [], []
             with torch.no_grad():
-                for bags, labels in tqdm(
+                for bags, labels, _ in tqdm(
                     val_loader, desc=f"MIL Epoch {epoch+1} Validation"
                 ):
                     bags, labels = bags[0].to(device), labels.to(device)
@@ -709,6 +708,7 @@ def train_mil_classifier(
             scheduler.step(val_auc)
 
             # ----------- Early Stopping Logic -----------
+            
             if val_auc > best_auc:
                 best_auc = val_auc
                 best_model_wts = copy.deepcopy(model.state_dict())
@@ -725,7 +725,7 @@ def train_mil_classifier(
                         f"{bcolors.INFO}[Early Stopping]{bcolors.ENDC} No improvement for {patience} epochs. Stopping at epoch {epoch+1}."
                     )
                     break
-
+            
             # Save checkpoint every 10 epochs (or adjust frequency)
             if (epoch + 1) % 10 == 0:
                 checkpoint_path = f"src/models/{base_model_name}_epoch{epoch+1}.pth"
@@ -736,7 +736,7 @@ def train_mil_classifier(
 
         # Load best model weights at the end
         model.load_state_dict(best_model_wts)
-        final_model_path = f"src/models/{base_model_name}_final.pth"
+        final_model_path = f"src/models/{base_model_name}_test_final.pth"
         torch.save(model.state_dict(), final_model_path)
         print(
             f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Final best model saved to {final_model_path}. Best Val AUC: {best_auc:.4f}"
@@ -770,7 +770,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
         "features",
         f"level_{feature_level}",
         model_type,
-        "test_new",
+        "val",
     )
     feature_base_dir_train = os.path.join(
         os.getcwd(),
@@ -788,7 +788,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
         "features",
         f"level_{feature_level}",
         model_type,
-        "val_new",
+        "test",
     )
     print(
         f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Testing MIL classifier with features from {feature_dir}..."
@@ -819,7 +819,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Starting model testing...")
 
     with torch.no_grad():
-        for features, labels, wsi_name in val_loader:
+        for features, labels, wsi_name in test_loader:
             # In our DataLoader, batch_size=1, so features will be a list containing one tensor
             features = features.squeeze(0).to(device)
             labels = labels.to(device)
@@ -870,9 +870,9 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
             "Predicted_Class": binary_predictions,
         }
     )
-    results_df.to_csv("mil_test_results.csv", index=False)
+    results_df.to_csv(f"mil_test_results_{model_type}.csv", index=False)
     print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Detailed results saved to mil_test_results.csv"
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Detailed results saved to mil_test_results_{model_type}.csv"
     )
 
     return {
@@ -912,23 +912,23 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True):
             ),
         },
         {
-            "name": "val_new",
-            "wsi_dir": os.path.join(os.getcwd(), "data", "camelyon16", "val_new", "img"),
+            "name": "test",
+            "wsi_dir": os.path.join(os.getcwd(), "data", "camelyon16", "test", "img"),
             "annot_dir": os.path.join(
-                os.getcwd(), "data", "camelyon16", "val_new", "mask", "annotations"
+                os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
             ),
             "patch_dir": os.path.join(
-                os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "val_new"
+                os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "test"
             ),
         },
         {
-            "name": "test_new",
-            "wsi_dir": os.path.join(os.getcwd(), "data", "camelyon16", "test_new", "img"),
+            "name": "val",
+            "wsi_dir": os.path.join(os.getcwd(), "data", "camelyon16", "val", "img"),
             "annot_dir": os.path.join(
-                os.getcwd(), "data", "camelyon16", "test_new", "mask", "annotations"
+                os.getcwd(), "data", "camelyon16", "val", "mask", "annotations"
             ),
             "patch_dir": os.path.join(
-                os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "test_new"
+                os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "val"
             ),
         },
     ]
@@ -1153,7 +1153,7 @@ def extract_features(
         ]
     )
 
-    sets = ["train", "val_new", "test_new"]
+    sets = ["train", "test", "val"]
     for split in sets:
         patch_dir = os.path.join(
             os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", split
@@ -1291,10 +1291,10 @@ def prepare_data():
 
     # Extract testing masks
     test_zip = os.path.join(
-        os.getcwd(), "data", "camelyon16", "test_new", "mask", "lesion_annotations.zip"
+        os.getcwd(), "data", "camelyon16", "val", "mask", "lesion_annotations.zip"
     )
     test_extract_to = os.path.join(
-        os.getcwd(), "data", "camelyon16", "test_new", "mask", "annotations"
+        os.getcwd(), "data", "camelyon16", "val", "mask", "annotations"
     )
     if not os.path.exists(test_zip):
         print(
@@ -1362,7 +1362,7 @@ def create_validation_set():
         )
         return
 
-    val_dir = os.path.join(os.getcwd(), "data", "camelyon16", "val_new", "img")
+    val_dir = os.path.join(os.getcwd(), "data", "camelyon16", "test", "img")
     os.makedirs(val_dir, exist_ok=True)
 
     slides = [f for f in os.listdir(train_dir) if f.endswith(".tif")]
@@ -1390,7 +1390,7 @@ def create_validation_set():
         os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
     )
     annot_val_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "val_new", "mask", "annotations"
+        os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
     )
     os.makedirs(annot_val_dir, exist_ok=True)
 
@@ -1429,7 +1429,7 @@ def main():
     parser.add_argument(
         "--test_patch",
         type=str,
-        default="test_new",
+        default="val",
     )
     parser.add_argument("-prep", "--prepare", action="store_true", help="Prepare data")
     parser.add_argument(
@@ -1618,7 +1618,7 @@ def main():
             f"{bcolors.INFO}[INFO]{bcolors.ENDC} Running CAMELYON16 evaluation script."
         )
         mask_folder_for_eval = os.path.join(
-            os.getcwd(), "data", "camelyon16", "test_new", "mask"
+            os.getcwd(), "data", "camelyon16", "val", "mask"
         )
         results_folder_for_eval = os.path.join(
             os.getcwd(), "models", "first_model", "model_predictions_csv"
