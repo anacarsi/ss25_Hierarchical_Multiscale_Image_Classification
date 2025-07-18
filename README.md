@@ -13,7 +13,7 @@
 <hr style="border:2px solid #1976D2; margin: 20px 0;"/>
 
 
-<h2 align="left" style="color:#1976D2; font-weight:bold; border-bottom:2px solid #1976D2;">Installation</h2>
+<h2 align="center" style="color:#1976D2; font-weight:bold; border-bottom:2px solid #1976D2;">Installation</h2>
 
 
 <div align="center">
@@ -31,7 +31,7 @@ pip install -r requirements.txt
 <hr style="border:2px solid #1976D2; margin: 20px 0;"/>
 
 
-<h2 align="center" style="color:#1976D2; font-weight:bold; border-bottom:2px solid #1976D2;">🛠Usage</h2>
+<h2 align="center" style="color:#1976D2; font-weight:bold; border-bottom:2px solid #1976D2;">Usage</h2>
 
 
 <div align="center">
