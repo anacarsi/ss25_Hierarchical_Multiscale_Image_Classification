@@ -553,7 +553,7 @@ def train_resnet_classifier(
 
 def train_mil_classifier(
     feature_level=3,
-    pooling="attention",
+    pooling="max",
     epochs=50,
     lr=1e-4,
     patience=10,
@@ -628,7 +628,10 @@ def train_mil_classifier(
     scaler = torch.cuda.amp.GradScaler()  # For mixed precision training
 
     # For consistent naming
-    base_model_name = f"mil_resnet18_level{feature_level}"
+    # Remove .pth from model_type if it exists
+    if model_type.endswith(".pth"):
+        model_prefix = model_type[:-4]
+    base_model_name = f"mil_{model_prefix}_{pooling}"
 
     log_filename = f"src/models/{base_model_name}_log.csv"
     log_fields = ["epoch", "train_loss", "train_auc", "val_loss", "val_auc"]
@@ -736,7 +739,7 @@ def train_mil_classifier(
         )
 
 
-def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18"):
+def test_mil_classifier(feature_level, pooling="max", model_type="resnet18"):
     """
     Test a trained MIL classifier on features extracted from WSI at a specific level.
 
@@ -748,7 +751,8 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
     Returns:
     - dict: Test metrics (AUC, accuracy, precision, recall, f1_score).
     """
-    model_path = get_latest_mil_model_path()
+    # model_path = get_latest_mil_model_path()
+    model_path = "src/models/mil_resnet18_weighted_loss_level3_val_natural_final_max_test_final.pth"
     feature_dim = 512 if model_type.startswith("resnet18") else 2048
     model = MILClassifier(feature_dim=feature_dim, pooling=pooling)
     print(model)
@@ -1579,7 +1583,7 @@ def main():
             return
         train_mil_classifier(
             feature_level=int(args.patch_level),
-            pooling="attention",
+            pooling="max",
             model_type=args.model_type,
         )
 
@@ -1592,7 +1596,7 @@ def main():
             return
         test_mil_classifier(
             feature_level=int(args.patch_level),
-            pooling="attention",
+            pooling="max",
             model_type=args.model_type,
         )
 

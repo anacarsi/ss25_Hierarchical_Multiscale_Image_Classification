@@ -67,8 +67,6 @@ def train_resnet(
                 ):
                     imgs, labels = imgs.to(device), labels.to(device)
                     outputs = model(imgs)
-                    for i in range(imgs.size(0)):
-                        print(f"Validation image name: {_[i]}")
                     preds = outputs.argmax(1)
                     val_correct += (preds == labels).sum().item()
             val_acc = val_correct / len(val_loader.dataset)
