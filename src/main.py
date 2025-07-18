@@ -408,15 +408,15 @@ def get_dataloaders(patch_dir, batch_size=BATCH_SIZE, balanced=False):
     n_normal = len(normal_indices)
 
     # if n_tumor > 0 and n_normal > 0:
-        # n_min = min(n_tumor, n_normal)
-        # rng = np.random.default_rng(42)
-        # tumor_sel = rng.choice(tumor_indices, n_min, replace=False)
-        # normal_sel = rng.choice(normal_indices, n_min, replace=False)
-        # selected_indices = np.concatenate([tumor_sel, normal_sel])
-        # val_dataset = Subset(val_dataset, selected_indices)
-        # print(
-            # f"{bcolors.INFO}[INFO]{bcolors.ENDC} Validation set balanced: {n_min} normal and {n_min} tumor patches."
-        # )
+    # n_min = min(n_tumor, n_normal)
+    # rng = np.random.default_rng(42)
+    # tumor_sel = rng.choice(tumor_indices, n_min, replace=False)
+    # normal_sel = rng.choice(normal_indices, n_min, replace=False)
+    # selected_indices = np.concatenate([tumor_sel, normal_sel])
+    # val_dataset = Subset(val_dataset, selected_indices)
+    # print(
+    # f"{bcolors.INFO}[INFO]{bcolors.ENDC} Validation set balanced: {n_min} normal and {n_min} tumor patches."
+    # )
     # else:
     print(
         f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Did not balance validation set: tumor patches = {n_tumor}, normal patches = {n_normal}."
@@ -494,9 +494,7 @@ def train_resnet_classifier(
         ).to(device)
         criterion = nn.CrossEntropyLoss(weight=weight_tensor)
         optimizer = Adam(model.parameters(), lr=5e-4, weight_decay=1e-5)
-        scheduler = ReduceLROnPlateau(
-            optimizer, mode="max", factor=0.1, patience=3
-        )
+        scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.1, patience=3)
         train_resnet(
             model,
             train_loader,
@@ -516,9 +514,7 @@ def train_resnet_classifier(
             freeze_encoder=False,
         ).to(device)
         optimizer = Adam(model.parameters(), lr=1e-5, weight_decay=1e-5)
-        scheduler = ReduceLROnPlateau(
-            optimizer, mode="max", factor=0.1, patience=5
-        )
+        scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.1, patience=5)
         train_resnet(
             model,
             train_loader,
@@ -540,9 +536,7 @@ def train_resnet_classifier(
             else nn.CrossEntropyLoss()
         )
         optimizer = Adam(model.parameters(), lr=1e-4, weight_decay=1e-5)
-        scheduler = ReduceLROnPlateau(
-            optimizer, mode="max", factor=0.1, patience=5
-        )
+        scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.1, patience=5)
         train_resnet(
             model,
             train_loader,
@@ -555,7 +549,6 @@ def train_resnet_classifier(
             30,
             base_model_path,
         )
-
 
 
 def train_mil_classifier(
@@ -708,7 +701,7 @@ def train_mil_classifier(
             scheduler.step(val_auc)
 
             # ----------- Early Stopping Logic -----------
-            
+
             if val_auc > best_auc:
                 best_auc = val_auc
                 best_model_wts = copy.deepcopy(model.state_dict())
@@ -725,7 +718,7 @@ def train_mil_classifier(
                         f"{bcolors.INFO}[Early Stopping]{bcolors.ENDC} No improvement for {patience} epochs. Stopping at epoch {epoch+1}."
                     )
                     break
-            
+
             # Save checkpoint every 10 epochs (or adjust frequency)
             if (epoch + 1) % 10 == 0:
                 checkpoint_path = f"src/models/{base_model_name}_epoch{epoch+1}.pth"
@@ -807,10 +800,10 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
     )
     # feature, label. wsi _ name not
     # for i, j in train_loader:
-        # print(f"WSI: {j}, Label: {i}, Shape: {i.shape}")
+    # print(f"WSI: {j}, Label: {i}, Shape: {i.shape}")
 
     # for features, label, wsi_name in train_loader:
-        # print(f"WSI: {wsi_name[0]}, Label: {label.item()}, Shape: {features.shape}")
+    # print(f"WSI: {wsi_name[0]}, Label: {label.item()}, Shape: {features.shape}")
 
     all_predictions = []
     all_true_labels = []

@@ -140,6 +140,8 @@ def get_mil_dataloaders(
         test_loader = DataLoader(
             test_dataset, batch_size=1, shuffle=False, pin_memory=True
         )
-    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} len: {len(train_loader.dataset)}, {len(val_loader.dataset)}, {len(test_loader.dataset) if test_loader else 0}")
+    print(
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} len: {len(train_loader.dataset)}, {len(val_loader.dataset)}, {len(test_loader.dataset) if test_loader else 0}"
+    )
 
     return train_loader, val_loader, test_loader
