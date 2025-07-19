@@ -445,9 +445,10 @@ def train_resnet_classifier(
     strategy="baseline",  # options: baseline, balanced, weighted_loss, self_supervised
     phase1_epochs=10,
     phase2_epochs=20,
+    resnet_type="resnet18",  # options: resnet18, resnet50
 ):
     """
-    Train a ResNet18 classifier on extracted patches with optional strategy.
+    Train a ResNet18/ResNet50 classifier on extracted patches with optional strategy.
 
     Parameters:
     - level (int): WSI level for patch extraction.
@@ -469,7 +470,7 @@ def train_resnet_classifier(
     if train_loader is None:
         return
 
-    base_model_path = f"src/models/resnet18_{strategy}_level{level}"
+    base_model_path = f"src/models/{resnet_type}_{strategy}_level{level}"
 
     all_labels = np.array(train_dataset.labels)
     unique_labels, counts = np.unique(all_labels, return_counts=True)
@@ -529,7 +530,7 @@ def train_resnet_classifier(
         )
 
     else:
-        model = ResNetClassifier().to(device)
+        model = ResNetClassifier(model_type=resnet_type).to(device)
         criterion = (
             nn.CrossEntropyLoss(weight=weight_tensor)
             if strategy == "weighted_loss"
@@ -555,7 +556,7 @@ def train_mil_classifier(
     feature_level=3,
     pooling="attention",
     epochs=50,
-    lr=1e-4,
+    lr=1e-5,
     patience=10,
     model_type="resnet18",
 ):
@@ -611,7 +612,10 @@ def train_mil_classifier(
     # Optimizer: All parameters of the MILClassifier are trainable.
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
 
-    criterion = nn.CrossEntropyLoss()
+    class_weights = torch.FloatTensor([1.782, 0.636]).to(
+        device
+    )  # we have 39 training normal slides, 110 training tumor slides
+    criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     scheduler = ReduceLROnPlateau(
         optimizer,
@@ -732,7 +736,7 @@ def train_mil_classifier(
 
         # Load best model weights at the end
         model.load_state_dict(best_model_wts)
-        final_model_path = f"src/models/{base_model_name}_test_final.pth"
+        final_model_path = f"src/models/{base_model_name}_final.pth"
         torch.save(model.state_dict(), final_model_path)
         print(
             f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Final best model saved to {final_model_path}. Best Val AUC: {best_auc:.4f}"
@@ -754,7 +758,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
     # model_path = get_latest_mil_model_path()
     if model_type.endswith(".pth"):
         model_name = model_type[:-4]
-    model_path = f"src/models/mil_{model_name}_{pooling}.pth"
+    model_path = f"src/models/mil_{model_name}_{pooling}_final.pth"
     feature_dim = 512 if model_type.startswith("resnet18") else 2048
     model = MILClassifier(feature_dim=feature_dim, pooling=pooling)
     print(model)
@@ -869,6 +873,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
             "Predicted_Class": binary_predictions,
         }
     )
+    model_type = model_type.replace(".pth", "")
     results_df.to_csv(f"mil_test_results_{model_type}.csv", index=False)
     print(
         f"{bcolors.INFO}[INFO]{bcolors.ENDC} Detailed results saved to mil_test_results_{model_type}.csv"
@@ -1335,19 +1340,26 @@ def patches_extracted(patch_level):
     return os.path.exists(patch_dir) and any(os.listdir(patch_dir))
 
 
-def features_extracted(patch_level):
+def features_extracted(patch_level, model_type):
     """
     Check if features have been extracted for the specified patch level.
 
     Parameters:
     - patch_level (int): WSI level for patch extraction.
+    - model_type (str): Model type (e.g., "resnet").
 
     Returns:
     - bool: True if feature files exist, False otherwise.
     """
-    return os.path.exists(f"patch_features_{patch_level}.npy") and os.path.exists(
-        f"patch_labels_{patch_level}.npy"
+    features_path_train = os.path.join(
+        os.getcwd(),
+        "data",
+        "camelyon16",
+        "features",
+        f"level_{patch_level}",
+        model_type,
     )
+    return os.path.exists(features_path_train)
 
 
 def create_validation_set():
@@ -1443,15 +1455,7 @@ def main():
         "-train", "--train", action="store_true", help="Train Resnet model"
     )
     parser.add_argument(
-        "-eval", "--evaluate", action="store_true", help="Evaluate Resnet model"
-    )
-    parser.add_argument(
         "--extract_features", action="store_true", help="Extract features from patches"
-    )
-    parser.add_argument(
-        "--run_evaluation",
-        action="store_true",
-        help="Run CAMELYON16 evaluation script.",
     )
     parser.add_argument(
         "--balance_dataset",
@@ -1491,6 +1495,12 @@ def main():
         type=str,
         default="resnet18",
         help="Name of the ResNet model to use for feature extraction",
+    )
+    parser.add_argument(
+        "--resnet_type",
+        type=str,
+        default="resnet18",
+        help="Type of ResNet model to train (e.g., resnet18, resnet50)",
     )
 
     parser.add_argument(
@@ -1562,7 +1572,7 @@ def main():
                 f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patches must be extracted before training."
             )
             return
-        train_resnet_classifier(args.patch_level)
+        train_resnet_classifier(args.patch_level, resnet_type=args.resnet_type)
 
     if args.train_strategy:
         if not images_downloaded():
@@ -1578,7 +1588,9 @@ def main():
         train_resnet_classifier(level=int(args.patch_level), strategy=args.strategy)
 
     if args.train_mil:
-        if not features_extracted(patch_level=args.patch_level):
+        if not features_extracted(
+            patch_level=args.patch_level, model_type=args.model_type
+        ):
             print(
                 f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Features must be extracted before training MIL classifier."
             )
@@ -1591,7 +1603,9 @@ def main():
 
     # Test MIL classifier
     if args.test_mil:
-        if not features_extracted(patch_level=args.patch_level):
+        if not features_extracted(
+            patch_level=args.patch_level, model_type=args.model_type
+        ):
             print(
                 f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Features must be extracted before testing MIL classifier."
             )
@@ -1608,106 +1622,6 @@ def main():
         download_all_tumor_extract_patches()
     if args.count_tumor_patches:
         count_number_tumor_patches(level=3)
-
-    if args.run_evaluation:
-        """
-        Calculate False Positives (FPs), True Positives (TPs), and generates a Free-Response Receiver Operating Characteristic (FROC) curve.
-        """
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Running CAMELYON16 evaluation script."
-        )
-        mask_folder_for_eval = os.path.join(
-            os.getcwd(), "data", "camelyon16", "val", "mask"
-        )
-        results_folder_for_eval = os.path.join(
-            os.getcwd(), "models", "first_model", "model_predictions_csv"
-        )
-
-        if not os.path.exists(mask_folder_for_eval):
-            print(
-                f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Evaluation mask folder '{mask_folder_for_eval}' not found. Please generate TIFF masks from XML annotations first."
-            )
-        elif not os.path.exists(results_folder_for_eval):
-            print(
-                f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Model results folder '{results_folder_for_eval}' not found. Please run your detection model first."
-            )
-        else:
-            result_file_list = [
-                each
-                for each in os.listdir(results_folder_for_eval)
-                if each.endswith(".csv")
-            ]
-
-            EVALUATION_MASK_LEVEL = 5
-            L0_RESOLUTION = 0.243
-
-            FROC_data = np.empty((4, len(result_file_list)), dtype=object)
-            FP_summary = np.empty((2, len(result_file_list)), dtype=object)
-            detection_summary = np.empty((2, len(result_file_list)), dtype=object)
-
-            caseNum = 0
-            for case in result_file_list:
-                print(f"Evaluating Performance on image: {case[0:-4]}")
-                sys.stdout.flush()
-                csvDIR = os.path.join(results_folder_for_eval, case)
-                Probs, Xcorr, Ycorr = readCSVContent(
-                    csvDIR
-                )  # is this function is updated for Python 3?
-
-                is_tumor = case[0:5].lower() == "tumor"  # Use .lower() for robustness
-                if is_tumor:
-                    maskDIR = (
-                        os.path.join(mask_folder_for_eval, case[0:-4]) + "_Mask.tif"
-                    )
-                    if not os.path.exists(maskDIR):
-                        print(
-                            f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Mask TIFF '{maskDIR}' not found for tumor case. Skipping."
-                        )
-                        continue  # Skip to next case if mask is missing
-                    evaluation_mask = computeEvaluationMask(
-                        maskDIR, L0_RESOLUTION, EVALUATION_MASK_LEVEL
-                    )  # Python 3?
-                    ITC_labels = computeITCList(
-                        evaluation_mask, L0_RESOLUTION, EVALUATION_MASK_LEVEL
-                    )
-                else:
-                    evaluation_mask = 0  # Or a blank mask for consistency
-                    ITC_labels = []
-
-                FROC_data[0][caseNum] = case
-                FP_summary[0][caseNum] = case
-                detection_summary[0][caseNum] = case
-
-                # Update compute_FP_TP_Probs for Python 3 division (//)
-                (
-                    FROC_data[1][caseNum],
-                    FROC_data[2][caseNum],
-                    FROC_data[3][caseNum],
-                    detection_summary[1][caseNum],
-                    FP_summary[1][caseNum],
-                ) = compute_FP_TP_Probs(
-                    Ycorr,
-                    Xcorr,
-                    Probs,
-                    is_tumor,
-                    evaluation_mask,
-                    ITC_labels,
-                    EVALUATION_MASK_LEVEL,
-                )
-                caseNum += 1
-
-            # Compute FROC curve
-            if caseNum > 0:  # Only compute if there were cases processed
-                total_FPs, total_sensitivity = computeFROC(
-                    FROC_data
-                )  # Update for Python 3
-
-                # plot FROC curve
-                plotFROC(total_FPs, total_sensitivity)  # Update for Python 3
-            else:
-                print(
-                    f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} No cases processed for FROC evaluation."
-                )
 
 
 if __name__ == "__main__":

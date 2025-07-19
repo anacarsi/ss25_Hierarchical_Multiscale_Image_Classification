@@ -37,12 +37,30 @@ class MILAttentionPooling(nn.Module):
         return M, A  # Return pooled feature and attention weights
 
 
+class GatedAttentionPooling(nn.Module):
+    def __init__(self, in_dim, attn_dim=128):
+        super().__init__()
+        self.V = nn.Linear(in_dim, attn_dim)
+        self.U = nn.Linear(in_dim, attn_dim)
+        self.attn = nn.Linear(attn_dim, 1)
+
+    def forward(self, x):
+        # Gated mechanism: tanh(Vx) * sigmoid(Ux)
+        A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
+        A = self.attn(A)
+        A = torch.softmax(A, dim=0)
+        M = torch.sum(A * x, dim=0)
+        return M, A
+
+
 class MILClassifier(nn.Module):
     def __init__(self, feature_dim, num_classes=2, pooling="attention"):
         super().__init__()
         self.pooling = pooling
         if pooling == "attention":
             self.aggregator = MILAttentionPooling(feature_dim)
+        elif pooling == "gated_attention":
+            self.aggregator = GatedAttentionPooling(feature_dim)
         elif pooling == "mean":
             self.aggregator = lambda x: (x.mean(dim=0), None)
         elif pooling == "max":
@@ -52,7 +70,8 @@ class MILClassifier(nn.Module):
         self.classifier = nn.Sequential(
             nn.Linear(feature_dim, 128),
             nn.ReLU(),
-            nn.Dropout(p=0.5),  # try 0.3–0.5
+            nn.LayerNorm(128),  # added layer norm, gotta try
+            nn.Dropout(p=0.5),
             nn.Linear(128, num_classes),
         )
 
