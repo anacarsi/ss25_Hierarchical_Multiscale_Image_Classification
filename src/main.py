@@ -157,10 +157,10 @@ def download_dataset(remote=False):
 
     # Define the target directories
     train_img_dir = os.path.join(camelyon_dir, "train", "img")
-    val_img_dir = os.path.join(camelyon_dir, "test", "img")
-    test_img_dir = os.path.join(camelyon_dir, "val", "img")
+    val_img_dir = os.path.join(camelyon_dir, "val", "img")
+    test_img_dir = os.path.join(camelyon_dir, "test", "img")
     train_mask_dir = os.path.join(camelyon_dir, "train", "mask")
-    test_mask_dir = os.path.join(camelyon_dir, "val", "mask")
+    test_mask_dir = os.path.join(camelyon_dir, "test", "mask")
 
     # Mapping of CAMELYON16_FILES keys to their target directories
     download_map = {
@@ -348,7 +348,7 @@ def get_dataloaders(patch_dir, batch_size=BATCH_SIZE, balanced=False):
     - tuple: (train_loader, val_loader, train_dataset, val_dataset)
     """
     train_dir = os.path.join(patch_dir, "train")
-    val_dir = os.path.join(patch_dir, "test")
+    val_dir = os.path.join(patch_dir, "val")
     train_slides = [
         d for d in os.listdir(train_dir) if os.path.isdir(os.path.join(train_dir, d))
     ]
@@ -553,7 +553,7 @@ def train_resnet_classifier(
 
 def train_mil_classifier(
     feature_level=3,
-    pooling="max",
+    pooling="attention",
     epochs=50,
     lr=1e-4,
     patience=10,
@@ -588,7 +588,7 @@ def train_mil_classifier(
         "features",
         f"level_{feature_level}",
         model_type,
-        "test",
+        "val",
     )
     if not os.path.exists(feature_base_dir_train) or not os.path.exists(
         feature_base_dir_val
@@ -739,7 +739,7 @@ def train_mil_classifier(
         )
 
 
-def test_mil_classifier(feature_level, pooling="max", model_type="resnet18"):
+def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18"):
     """
     Test a trained MIL classifier on features extracted from WSI at a specific level.
 
@@ -752,7 +752,9 @@ def test_mil_classifier(feature_level, pooling="max", model_type="resnet18"):
     - dict: Test metrics (AUC, accuracy, precision, recall, f1_score).
     """
     # model_path = get_latest_mil_model_path()
-    model_path = "src/models/mil_resnet18_weighted_loss_level3_val_natural_final_max_test_final.pth"
+    if model_type.endswith(".pth"):
+        model_name = model_type[:-4]
+    model_path = f"src/models/mil_{model_name}_{pooling}.pth"
     feature_dim = 512 if model_type.startswith("resnet18") else 2048
     model = MILClassifier(feature_dim=feature_dim, pooling=pooling)
     print(model)
@@ -767,7 +769,7 @@ def test_mil_classifier(feature_level, pooling="max", model_type="resnet18"):
         "features",
         f"level_{feature_level}",
         model_type,
-        "val",
+        "test",
     )
     feature_base_dir_train = os.path.join(
         os.getcwd(),
@@ -785,7 +787,7 @@ def test_mil_classifier(feature_level, pooling="max", model_type="resnet18"):
         "features",
         f"level_{feature_level}",
         model_type,
-        "test",
+        "val",
     )
     print(
         f"{bcolors.DEBUG}[DEBUG]{bcolors.ENDC} Testing MIL classifier with features from {feature_dir}..."
@@ -1286,19 +1288,19 @@ def prepare_data():
     else:
         extract_zip(train_zip, train_extract_to)
 
-    # Extract testing masks
-    test_zip = os.path.join(
+    # Extract validation masks
+    val_zip = os.path.join(
         os.getcwd(), "data", "camelyon16", "val", "mask", "lesion_annotations.zip"
     )
     test_extract_to = os.path.join(
         os.getcwd(), "data", "camelyon16", "val", "mask", "annotations"
     )
-    if not os.path.exists(test_zip):
+    if not os.path.exists(val_zip):
         print(
-            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Testing masks zip file not found. Please download the dataset first."
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Validation masks zip file not found. Please download the dataset first."
         )
     else:
-        extract_zip(test_zip, test_extract_to)
+        extract_zip(val_zip, test_extract_to)
 
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Data preparation completed.")
 
@@ -1359,7 +1361,7 @@ def create_validation_set():
         )
         return
 
-    val_dir = os.path.join(os.getcwd(), "data", "camelyon16", "test", "img")
+    val_dir = os.path.join(os.getcwd(), "data", "camelyon16", "val", "img")
     os.makedirs(val_dir, exist_ok=True)
 
     slides = [f for f in os.listdir(train_dir) if f.endswith(".tif")]
@@ -1387,7 +1389,7 @@ def create_validation_set():
         os.getcwd(), "data", "camelyon16", "train", "mask", "annotations"
     )
     annot_val_dir = os.path.join(
-        os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
+        os.getcwd(), "data", "camelyon16", "val", "mask", "annotations"
     )
     os.makedirs(annot_val_dir, exist_ok=True)
 
@@ -1583,7 +1585,7 @@ def main():
             return
         train_mil_classifier(
             feature_level=int(args.patch_level),
-            pooling="max",
+            pooling="attention",
             model_type=args.model_type,
         )
 
@@ -1596,7 +1598,7 @@ def main():
             return
         test_mil_classifier(
             feature_level=int(args.patch_level),
-            pooling="max",
+            pooling="attention",
             model_type=args.model_type,
         )
 

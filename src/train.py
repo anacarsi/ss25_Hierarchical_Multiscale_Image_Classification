@@ -98,5 +98,5 @@ def train_resnet(
             if (epoch + 1) % 10 == 0:
                 torch.save(model.state_dict(), f"{base_model_path}_epoch{epoch+1}.pth")
 
-        torch.save(model.state_dict(), f"{base_model_path}__val_new_final.pth")
+        torch.save(model.state_dict(), f"{base_model_path}_final.pth")
         print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Final model saved.")
