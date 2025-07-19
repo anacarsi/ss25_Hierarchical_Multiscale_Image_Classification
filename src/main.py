@@ -531,6 +531,7 @@ def train_resnet_classifier(
 
     else:
         model = ResNetClassifier(model_type=resnet_type).to(device)
+        print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Using {resnet_type} model.")
         criterion = (
             nn.CrossEntropyLoss(weight=weight_tensor)
             if strategy == "weighted_loss"
