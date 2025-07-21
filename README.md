@@ -12,7 +12,11 @@
 
 <hr style="border:2px solid #1976D2; margin: 20px 0;"/>
 
-
+</div>
+<div align="center">
+  <p><b>Architechture for MIL Pooling Classification using a residual feature extractor</b></p>
+  <img src="./images/architechture.png" alt="Architechture of Hi^PAC" width="950" height="300"/>
+</div>
 <h2 align="center" style="color:#1976D2; font-weight:bold; border-bottom:2px solid #1976D2;">Installation</h2>
 
 
@@ -26,7 +30,6 @@ cd ss25_Hierarchical_Multiscale_Image_Classification
 pip install -r requirements.txt
 ```
 
-</div>
 
 <hr style="border:2px solid #1976D2; margin: 20px 0;"/>
 
