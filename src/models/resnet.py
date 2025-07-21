@@ -38,12 +38,17 @@ class ResNetFeatureExtractor(nn.Module):
         simclr_trained=False,
     ):
         super().__init__()
-        assert model_type in ["resnet18", "resnet50"], "Only resnet18/50 supported"
         self.model_type = model_type
-        if model_type == "resnet18":
+        if model_type.startswith("resnet18"):
+            print(
+                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Using ResNet18 as feature extractor."
+            )
             base_model = models.resnet18(weights=ResNet18_Weights.DEFAULT)
             self.feature_dim = 512
-        elif model_type == "resnet50":
+        elif model_type.startswith("resnet50"):
+            print(
+                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Using ResNet50 as feature extractor."
+            )
             base_model = models.resnet50(weights=ResNet50_Weights.DEFAULT)
             self.feature_dim = 2048
         else:

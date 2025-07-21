@@ -3,6 +3,7 @@ import os
 import sys
 import csv
 import argparse
+import itertools
 import requests
 from tqdm import tqdm
 from torch.utils.data import Subset
@@ -372,14 +373,12 @@ def get_dataloaders(patch_dir, batch_size=BATCH_SIZE, balanced=False):
             T.RandomVerticalFlip(),
             T.RandomRotation(90),
             T.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
-            T.Resize((224, 224)),
             T.ToTensor(),
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
     )
     val_transform = T.Compose(
         [
-            T.Resize((224, 224)),
             T.ToTensor(),
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
@@ -445,7 +444,7 @@ def train_resnet_classifier(
     strategy="baseline",  # options: baseline, balanced, weighted_loss, self_supervised
     phase1_epochs=10,
     phase2_epochs=20,
-    resnet_type="resnet18",  # options: resnet18, resnet50
+    resnet_type="resnet180",  # options: resnet18, resnet50
 ):
     """
     Train a ResNet18/ResNet50 classifier on extracted patches with optional strategy.
@@ -553,6 +552,150 @@ def train_resnet_classifier(
         )
 
 
+def compare_resnet50_training_strategies(
+    level=3,
+    epochs=30,
+    batch_size=512,
+):
+    """
+    Train ResNet50 classifiers with different hyperparameter combinations and compare results.
+
+    Hyperparameters:
+    - Learning rate: [1e-4, 1e-5]
+    - Label smoothing: [0.0, 0.1]
+    - Weighted loss: [True, False]
+
+    For each configuration, records training, validation, and test metrics (accuracy, AUC, F1).
+    Prints results and saves a summary CSV.
+
+    Parameters:
+    - level (int): WSI level for patch extraction.
+    - epochs (int): Number of training epochs.
+    - batch_size (int): Batch size for DataLoader.
+    """
+    results = []
+    hyperparams = list(itertools.product([1e-4, 1e-5], [0.0, 0.1], [True, False]))
+    for lr, label_smoothing, weighted_loss in hyperparams:
+        strategy_name = f"lr{lr}_ls{label_smoothing}_weighted{weighted_loss}"
+        print(f"\n--- Training ResNet50: {strategy_name} ---")
+        patch_dir = os.path.join(
+            os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
+        )
+        train_loader, val_loader, train_dataset, val_dataset = get_dataloaders(
+            patch_dir, batch_size=batch_size, balanced=False
+        )
+        all_labels = np.array(train_dataset.labels)
+        unique_labels, counts = np.unique(all_labels, return_counts=True)
+        sample_counts = np.array(
+            [
+                counts[np.where(unique_labels == t)[0][0]] if t in unique_labels else 1
+                for t in [0, 1]
+            ]
+        )
+        class_weights = 1.0 / sample_counts
+        class_weights = class_weights / np.min(class_weights)
+        weight_tensor = torch.FloatTensor(class_weights).to(device)
+
+        model = ResNetClassifier(model_type="resnet50").to(device)
+        if weighted_loss:
+            criterion = nn.CrossEntropyLoss(
+                weight=weight_tensor, label_smoothing=label_smoothing
+            )
+        else:
+            criterion = nn.CrossEntropyLoss(label_smoothing=label_smoothing)
+        optimizer = Adam(model.parameters(), lr=lr, weight_decay=1e-5)
+        scheduler = ReduceLROnPlateau(optimizer, mode="max", factor=0.1, patience=5)
+
+        # Train the model
+        train_metrics, val_metrics = train_resnet(
+            model,
+            train_loader,
+            val_loader,
+            train_dataset,
+            val_dataset,
+            criterion,
+            optimizer,
+            scheduler,
+            epochs,
+            f"src/models/resnet50_{strategy_name}_level{level}",
+            return_metrics=True,  # You may need to add this to train_resnet to return metrics
+        )
+
+        # Test the model
+        model_path = f"src/models/resnet50_{strategy_name}_level{level}_final.pth"
+        test_metrics = test_resnet_classifier(
+            level=level,
+            model_type=model_path,
+            batch_size=batch_size,
+        )
+
+        result = {
+            "strategy": strategy_name,
+            "lr": lr,
+            "label_smoothing": label_smoothing,
+            "weighted_loss": weighted_loss,
+            "train_accuracy": train_metrics["accuracy"],
+            "train_auc": train_metrics["auc"],
+            "val_accuracy": val_metrics["accuracy"],
+            "val_auc": val_metrics["auc"],
+            "test_accuracy": test_metrics["accuracy"],
+            "test_auc": test_metrics["auc"],
+            "test_f1": test_metrics["f1_score"],
+        }
+        results.append(result)
+        print(f"\nResults for {strategy_name}:")
+        print(result)
+
+    # Save summary CSV
+    results_df = pd.DataFrame(results)
+    results_df.to_csv(f"resnet50_training_comparison_level{level}.csv", index=False)
+    print(f"\nSummary saved to resnet50_training_comparison_level{level}.csv")
+    print(results_df)
+
+
+def check_patch_images_integrity(level=2, split="test"):
+    """
+    Check if images in patches/level_{level}/{split} are not truncated or corrupt using PIL.Image.
+
+    Parameters:
+    - level (int): Patch extraction level.
+    - split (str): Dataset split ("train", "val", "test").
+    """
+    patch_dir = os.path.join(
+        os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", split
+    )
+    if not os.path.exists(patch_dir):
+        print(
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patch directory {patch_dir} does not exist."
+        )
+        return
+
+    corrupt_images = []
+    for slide_dir in os.listdir(patch_dir):
+        slide_path = os.path.join(patch_dir, slide_dir)
+        if not os.path.isdir(slide_path):
+            continue
+        for img_file in os.listdir(slide_path):
+            img_path = os.path.join(slide_path, img_file)
+            try:
+                with Image.open(img_path) as img:
+                    img.verify()  # verify() does not load the image data, just checks integrity
+            except Exception as e:
+                corrupt_images.append(img_path)
+                print(
+                    f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Corrupt or truncated image: {img_path} ({e})"
+                )
+
+    if corrupt_images:
+        print(
+            f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} Found {len(corrupt_images)} corrupt/truncated images."
+        )
+    else:
+        print(
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} All images in {patch_dir} are valid."
+        )
+
+
 def train_mil_classifier(
     feature_level=3,
     pooling="attention",
@@ -613,7 +756,7 @@ def train_mil_classifier(
     # Optimizer: All parameters of the MILClassifier are trainable.
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=1e-5)
 
-    class_weights = torch.FloatTensor([1.782, 0.636]).to(
+    class_weights = torch.FloatTensor([3.82, 1.35]).to(
         device
     )  # we have 39 training normal slides, 110 training tumor slides
     criterion = nn.CrossEntropyLoss(weight=class_weights)
@@ -652,6 +795,7 @@ def train_mil_classifier(
             for bags, labels, _ in tqdm(
                 train_loader, desc=f"MIL Epoch {epoch+1} Training"
             ):
+                # print(f"[DEBUG] bag shape: {bags.shape}")
                 bags, labels = bags[0].to(device), labels.to(device)
 
                 optimizer.zero_grad()
@@ -742,6 +886,98 @@ def train_mil_classifier(
         print(
             f"{bcolors.INFO}[INFO]{bcolors.ENDC} Training complete. Final best model saved to {final_model_path}. Best Val AUC: {best_auc:.4f}"
         )
+
+
+def test_resnet_classifier(
+    level=3,
+    model_type="resnet18_patch_classifier_final",
+    batch_size=512,
+):
+    """
+    Test a trained ResNet classifier on extracted patch features.
+
+    Parameters:
+    - level (int): WSI level for patch extraction.
+    - model_type (str): Name of the trained ResNet model to use for testing.
+    - batch_size (int): Batch size for DataLoader.
+
+    Returns:
+    - dict: Test metrics (AUC, accuracy, precision, recall, f1_score).
+    """
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    patch_dir = os.path.join(
+        os.getcwd(), "data", "camelyon16", "patches", f"level_{level}", "test"
+    )
+    model_path = os.path.join(os.getcwd(), "src", "models", model_type)
+    if not os.path.exists(model_path):
+        print(
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Model file '{model_path}' not found."
+        )
+        return
+
+    # Load test dataset
+    transform = T.Compose(
+        [
+            T.ToTensor(),
+            T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ]
+    )
+    test_dataset = PatchDataset(patch_dir, transform=transform)
+    test_loader = torch.utils.data.DataLoader(
+        test_dataset, batch_size=batch_size, shuffle=False, num_workers=8
+    )
+
+    model = ResNetClassifier(model_type=model_type.split("_")[0]).to(device)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.eval()
+
+    all_probs = []
+    all_labels = []
+    all_preds = []
+
+    with torch.no_grad():
+        for imgs, labels, _ in tqdm(test_loader, desc="Testing ResNet Classifier"):
+            imgs = imgs.to(device)
+            labels = labels.to(device)
+            logits = model(imgs)
+            probs = torch.softmax(logits, dim=1)[:, 1].cpu().numpy()
+            preds = (probs > 0.5).astype(int)
+            all_probs.extend(probs)
+            all_labels.extend(labels.cpu().numpy())
+            all_preds.extend(preds)
+
+    auc = roc_auc_score(all_labels, all_probs)
+    acc = accuracy_score(all_labels, all_preds)
+    precision = precision_score(all_labels, all_preds, zero_division=0)
+    recall = recall_score(all_labels, all_preds, zero_division=0)
+    f1 = f1_score(all_labels, all_preds, zero_division=0)
+
+    print(f"\n{bcolors.OKBLUE}--- ResNet Test Results ---{bcolors.ENDC}")
+    print(f"Test AUC: {auc:.4f}")
+    print(f"Test Accuracy: {acc:.4f}")
+    print(f"Test Precision: {precision:.4f}")
+    print(f"Test Recall: {recall:.4f}")
+    print(f"Test F1-Score: {f1:.4f}")
+
+    results_df = pd.DataFrame(
+        {
+            "True_Label": all_labels,
+            "Predicted_Probability": all_probs,
+            "Predicted_Class": all_preds,
+        }
+    )
+    results_df.to_csv(f"resnet_test_results_{model_type}.csv", index=False)
+    print(
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Detailed results saved to resnet_test_results_{model_type}.csv"
+    )
+
+    return {
+        "auc": auc,
+        "accuracy": acc,
+        "precision": precision,
+        "recall": recall,
+        "f1_score": f1,
+    }
 
 
 def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18"):
@@ -1063,71 +1299,120 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True):
 def count_number_tumor_patches(level=3):
     """
     Count the number of tumor and normal patches in the patch directory for a given level across all slides.
+    Also counts separately for train, val, and test subdirectories.
 
     Parameters:
     - level (int): WSI level for patch extraction.
     """
-    patch_dir = os.path.join(
+    base_patch_dir = os.path.join(
         os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
     )
-    if not os.path.exists(patch_dir):
-        print(
-            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patch directory '{patch_dir}' does not exist. Please run patch extraction first."
-        )
-        return
+    splits = ["train", "val", "test"]
+    split_counts = {}
 
-    total_tumor = 0
-    total_normal = 0
-    slides_with_no_tumor = []
-    slides_with_tumor_in_normal = []
-
-    empty_folders = [
-        d
-        for d in os.listdir(patch_dir)
-        if os.path.isdir(os.path.join(patch_dir, d))
-        and not os.listdir(os.path.join(patch_dir, d))
-    ]
-    # Print empty folders
-    if empty_folders:
-        print(
-            f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} The following folders are empty: {', '.join(empty_folders)}"
+    for split in splits:
+        patch_dir = os.path.join(base_patch_dir, split)
+        total_tumor = 0
+        total_normal = 0
+        slides_with_no_tumor = []
+        slides_with_tumor_in_normal = []
+        empty_folders = (
+            [
+                d
+                for d in os.listdir(patch_dir)
+                if os.path.isdir(os.path.join(patch_dir, d))
+                and not os.listdir(os.path.join(patch_dir, d))
+            ]
+            if os.path.exists(patch_dir)
+            else []
         )
-    print(f"Number of empty folders: {len(empty_folders)}")
-    for slide_name in os.listdir(patch_dir):
-        slide_path = os.path.join(patch_dir, slide_name)
-        if os.path.isdir(slide_path):
-            num_tumor = sum(
-                1 for f in os.listdir(slide_path) if f.endswith("_tumor.png")
+        if empty_folders:
+            print(
+                f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} The following folders in {split} are empty: {', '.join(empty_folders)}"
             )
-            num_normal = sum(
-                1 for f in os.listdir(slide_path) if f.endswith("_normal.png")
-            )
-            total_tumor += num_tumor
-            total_normal += num_normal
-            if num_tumor == 0:
-                slides_with_no_tumor.append(slide_name)
-            # Warn if a normal slide contains tumor patches
-            if slide_name.startswith("normal_") and num_tumor > 0:
-                slides_with_tumor_in_normal.append(slide_name)
-
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Total tumor patches at level {level}: {total_tumor}"
-    )
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Total non-tumor patches at level {level}: {total_normal}"
-    )
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Total slides with no tumor patches at level {level}: {len(slides_with_no_tumor)}"
-    )
-    print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Slides with no tumor patches: {', '.join(slides_with_no_tumor)}"
-        if slides_with_no_tumor
-        else f"{bcolors.INFO}All slides have tumor patches.{bcolors.ENDC}"
-    )
-    if slides_with_tumor_in_normal:
         print(
-            f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} The following normal slides contain tumor patches: {', '.join(slides_with_tumor_in_normal)}"
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} Number of empty folders in {split}: {len(empty_folders)}"
         )
+        if not os.path.exists(patch_dir):
+            print(
+                f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patch directory '{patch_dir}' does not exist. Please run patch extraction first."
+            )
+            split_counts[split] = {"tumor": 0, "normal": 0}
+            continue
+        for slide_name in os.listdir(patch_dir):
+            slide_path = os.path.join(patch_dir, slide_name)
+            if os.path.isdir(slide_path):
+                num_tumor = sum(
+                    1 for f in os.listdir(slide_path) if f.endswith("_tumor.png")
+                )
+                num_normal = sum(
+                    1 for f in os.listdir(slide_path) if f.endswith("_normal.png")
+                )
+                total_tumor += num_tumor
+                total_normal += num_normal
+                if num_tumor == 0:
+                    slides_with_no_tumor.append(slide_name)
+                if slide_name.startswith("normal_") and num_tumor > 0:
+                    slides_with_tumor_in_normal.append(slide_name)
+        split_counts[split] = {"tumor": total_tumor, "normal": total_normal}
+        print(
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} [{split}] Total tumor patches at level {level}: {total_tumor}"
+        )
+        print(
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} [{split}] Total non-tumor patches at level {level}: {total_normal}/{total_tumor + total_normal}"
+        )
+        print(
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} [{split}] Total slides with no tumor patches at level {level}: {len(slides_with_no_tumor)}/{len(os.listdir(patch_dir))}"
+        )
+        print(
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} [{split}] Slides with no tumor patches: {', '.join(slides_with_no_tumor)}"
+            if slides_with_no_tumor
+            else f"{bcolors.INFO}All slides have tumor patches.{bcolors.ENDC}"
+        )
+        if slides_with_tumor_in_normal:
+            print(
+                f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} [{split}] The following normal slides contain tumor patches: {', '.join(slides_with_tumor_in_normal)}"
+            )
+    print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Summary: {split_counts}")
+    count_test_tumor_images()
+    return split_counts
+
+
+def count_test_tumor_images():
+    """
+    Count the number of test images that have a tumor annotation (i.e., have a corresponding XML file in test/mask/annotations).
+
+    Returns:
+    - int: Number of test images with tumor annotation.
+    """
+    test_img_dir = os.path.join(os.getcwd(), "data", "camelyon16", "test", "img")
+    annot_dir = os.path.join(
+        os.getcwd(), "data", "camelyon16", "test", "mask", "annotations"
+    )
+    if not os.path.exists(test_img_dir):
+        print(
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Test image directory '{test_img_dir}' does not exist."
+        )
+        return 0
+    if not os.path.exists(annot_dir):
+        print(
+            f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Annotation directory '{annot_dir}' does not exist."
+        )
+        return 0
+    test_images = [f for f in os.listdir(test_img_dir) if f.endswith(".tif")]
+    annotated_images = []
+    for img in test_images:
+        xml_name = img.replace(".tif", ".xml")
+        xml_path = os.path.join(annot_dir, xml_name)
+        if os.path.exists(xml_path):
+            annotated_images.append(img)
+    print(
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Number of test images with tumor annotation: {len(annotated_images)}"
+    )
+    print(
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Annotated test images: {', '.join(annotated_images)}"
+    )
+    return len(annotated_images)
 
 
 def extract_features(
@@ -1143,6 +1428,7 @@ def extract_features(
     - model_name (str): Name of the trained ResNet model to use for feature extraction.
     - simclr_trained_model (bool): Whether the model was trained with SimCLR.
     """
+    check_patch_images_integrity(level=level)
     model_path = os.path.join(os.getcwd(), "src", "models", model_type)
     if not os.path.exists(model_path):
         print(
@@ -1152,7 +1438,6 @@ def extract_features(
 
     transform = T.Compose(
         [
-            T.Resize((224, 224)),
             T.ToTensor(),
             T.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ]
@@ -1182,6 +1467,7 @@ def extract_features(
             model = ResNetFeatureExtractor(
                 trained_classifier_weights_path=model_path,
                 simclr_trained=simclr_trained_model,
+                model_type=model_type,
             ).to(torch.device("cuda" if torch.cuda.is_available() else "cpu"))
         except NameError:
             print(
@@ -1456,7 +1742,15 @@ def main():
         "-train", "--train", action="store_true", help="Train Resnet model"
     )
     parser.add_argument(
+        "--test_resnet", action="store_true", help="Test Resnet model on validation set"
+    )
+    parser.add_argument(
         "--extract_features", action="store_true", help="Extract features from patches"
+    )
+    parser.add_argument(
+        "--compare_resnets",
+        action="store_true",
+        help="Compare two ResNet models on the same dataset",
     )
     parser.add_argument(
         "--balance_dataset",
@@ -1500,7 +1794,7 @@ def main():
     parser.add_argument(
         "--resnet_type",
         type=str,
-        default="resnet18",
+        default="resnet50",
         help="Type of ResNet model to train (e.g., resnet18, resnet50)",
     )
 
@@ -1588,6 +1882,14 @@ def main():
             return
         train_resnet_classifier(level=int(args.patch_level), strategy=args.strategy)
 
+    if args.compare_resnets:
+        compare_resnet50_training_strategies(level=int(args.patch_level))
+    if args.test_resnet:
+        test_resnet_classifier(
+            level=int(args.patch_level),
+            model_type=args.model_type,
+        )
+
     if args.train_mil:
         if not features_extracted(
             patch_level=args.patch_level, model_type=args.model_type
@@ -1604,6 +1906,7 @@ def main():
 
     # Test MIL classifier
     if args.test_mil:
+        count_test_tumor_images()
         if not features_extracted(
             patch_level=args.patch_level, model_type=args.model_type
         ):
