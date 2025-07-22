@@ -3,7 +3,6 @@ __pycache__/
 *.py[cod]
 *$py.class
 .pre-commit-config.yaml
-*.png
 # C extensions
 carsi-multisc/
 env_carsi/
@@ -12,7 +11,6 @@ env_carsi/
 patch_paths*.txt
 *.npy
 data/
-*.png
 *.csv
 src/preprocessing/__pycache__/
 # Distribution / packaging

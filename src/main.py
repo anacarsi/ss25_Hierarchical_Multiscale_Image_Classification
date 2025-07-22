@@ -2,6 +2,9 @@ from collections import defaultdict
 import os
 import sys
 import csv
+
+import matplotlib.pyplot as plt
+import seaborn as sns
 import argparse
 import itertools
 import requests
@@ -454,6 +457,7 @@ def train_resnet_classifier(
     - strategy (str): Training strategy ('baseline', 'balanced', 'weighted_loss', 'self_supervised').
     - phase1_epochs (int): Number of epochs for phase 1 (self-supervised only).
     - phase2_epochs (int): Number of epochs for phase 2 (self-supervised only).
+    - resnet_type (str): ResNet architecture to use ('resnet18' or 'resnet50').
     """
     patch_dir = os.path.join(
         os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
@@ -980,6 +984,25 @@ def test_resnet_classifier(
     }
 
 
+def plot_topk_attention(attention_weights, wsi_name, out_dir="attention_heatmaps"):
+    sorted_attn = np.sort(attention_weights)[::-1]  # Descending
+    cumulative = np.cumsum(sorted_attn)
+    cumulative /= cumulative[-1]  # Normalize to [0, 1]
+
+    plt.figure(figsize=(6, 4))
+    plt.plot(
+        np.arange(1, len(cumulative) + 1), cumulative, label="Cumulative Attention"
+    )
+    plt.xlabel("Top-K patches")
+    plt.ylabel("Cumulative Attention")
+    plt.title(f"Top-K Attention Accumulation\n({wsi_name})")
+    plt.grid(True)
+    plt.savefig(
+        os.path.join(out_dir, f"{wsi_name}_topk_plot.png"), bbox_inches="tight", dpi=300
+    )
+    plt.close()
+
+
 def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18"):
     """
     Test a trained MIL classifier on features extracted from WSI at a specific level.
@@ -1007,7 +1030,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
         os.getcwd(),
         "data",
         "camelyon16",
-        "features",
+        "features_coords",
         f"level_{feature_level}",
         model_type,
         "test",
@@ -1016,7 +1039,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
         os.getcwd(),
         "data",
         "camelyon16",
-        "features",
+        "features_coords",
         f"level_{feature_level}",
         model_type,
         "train",
@@ -1025,7 +1048,7 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
         os.getcwd(),
         "data",
         "camelyon16",
-        "features",
+        "features_coords",
         f"level_{feature_level}",
         model_type,
         "val",
@@ -1065,7 +1088,10 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
             labels = labels.to(device)
 
             logits, _ = model(features)
-            print(f"Logits: {logits.cpu().numpy()}")
+            coord_path = os.path.join(
+                feature_dir, wsi_name[0] + "_coords.npy"
+            )  # or adjust extension
+            extract_attention_scores(model, features, wsi_name[0], coord_path)
 
             probs = torch.softmax(logits, dim=0).cpu()
             probabilities = probs[1].item()
@@ -1123,6 +1149,44 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
         "recall": recall,
         "f1_score": f1,
     }
+
+
+def extract_attention_scores(
+    model, features, wsi_name, coord_path, out_dir="attention_heatmaps"
+):
+    os.makedirs(out_dir, exist_ok=True)
+    _, attention_weights = model(features)  # (N, 1)
+    attention_weights = attention_weights.squeeze().cpu().numpy()  # (N,)
+
+    coords = np.load(coord_path)  # e.g., shape (N, 2), with x, y tile locations
+
+    assert len(coords) == len(
+        attention_weights
+    ), f"Mismatch: {len(coords)} coords vs {len(attention_weights)} attn"
+
+    # Save raw attention scores
+    plot_topk_attention(attention_weights, wsi_name, out_dir=out_dir)
+    np.save(os.path.join(out_dir, f"{wsi_name}_attn.npy"), attention_weights)
+
+    # Create and save a scatter heatmap
+    x, y = coords[:, 0], coords[:, 1]
+    plt.figure(figsize=(8, 6))
+    sns.scatterplot(
+        x=x,
+        y=y,
+        hue=attention_weights,
+        palette="viridis",
+        s=10,
+        edgecolor=None,
+        legend=False,
+    )
+    plt.gca().invert_yaxis()
+    plt.axis("off")
+    plt.title(f"Attention Heatmap: {wsi_name}")
+    plt.savefig(
+        os.path.join(out_dir, f"{wsi_name}_heatmap.png"), bbox_inches="tight", dpi=300
+    )
+    plt.close()
 
 
 def extract_patches(patch_size=224, level=3, stride=None, pad=True):
@@ -1458,6 +1522,22 @@ def extract_features(
             f"{bcolors.INFO}[INFO]{bcolors.ENDC} Extracting features for {split} set..."
         )
 
+        features_save_dir = os.path.join(
+            os.getcwd(),
+            "data",
+            "camelyon16",
+            "features_coords",
+            f"level_{level}",
+            model_type,
+            split,
+        )
+
+        if os.path.exists(features_save_dir) and os.listdir(features_save_dir):
+            print(
+                f"{bcolors.INFO}[INFO]{bcolors.ENDC} Feature directory {features_save_dir} already exists and is not empty. Skipping {split}."
+            )
+            continue
+
         dataset = PatchDataset(patch_dir, transform=transform)
         loader = torch.utils.data.DataLoader(  # get_dataloaders is opnly for training data augmentation. in feature extraction we don't need it
             dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=8
@@ -1477,7 +1557,9 @@ def extract_features(
 
         model.eval()
 
-        wsi_features_dict = defaultdict(lambda: {"features": [], "patch_labels": []})
+        wsi_features_dict = defaultdict(
+            lambda: {"features": [], "patch_labels": [], "coords": []}
+        )
         wsi_overall_labels = {}
 
         with torch.no_grad():
@@ -1496,6 +1578,16 @@ def extract_features(
                     wsi_name = rel_path.split(os.sep)[0]
                     wsi_features_dict[wsi_name]["features"].append(feats[i])
                     wsi_features_dict[wsi_name]["patch_labels"].append(patch_label)
+                    # --- Parse coordinates from filename ---
+                    patch_filename = os.path.basename(patch_path)
+                    # Expected format: ..._x{X}_y{Y}_....png
+                    try:
+                        x = int(patch_filename.split("_x")[1].split("_")[0])
+                        y = int(patch_filename.split("_y")[1].split("_")[0])
+                        wsi_features_dict[wsi_name]["coords"].append([x, y])
+                    except Exception as e:
+                        print(f"Could not parse coordinates from {patch_filename}: {e}")
+                        wsi_features_dict[wsi_name]["coords"].append([0, 0])  # fallback
                     if patch_label == 1:
                         wsi_overall_labels[wsi_name] = 1
                     elif wsi_name not in wsi_overall_labels:
@@ -1507,22 +1599,13 @@ def extract_features(
             )
             continue
 
-        # Save features to correct path
-        features_save_dir = os.path.join(
-            os.getcwd(),
-            "data",
-            "camelyon16",
-            "features",
-            f"level_{level}",
-            model_type,
-            split,
-        )
         os.makedirs(features_save_dir, exist_ok=True)
 
         wsi_paths_list = []
         for wsi_name, data in wsi_features_dict.items():
             wsi_feature_array = np.array(data["features"])
             wsi_patch_labels_array = np.array(data["patch_labels"])
+            wsi_coords_array = np.array(data["coords"])
             wsi_overall_label = wsi_overall_labels[wsi_name]
 
             wsi_feature_path = os.path.join(
@@ -1532,15 +1615,18 @@ def extract_features(
             wsi_patch_labels_path = os.path.join(
                 features_save_dir, f"{wsi_name}_patch_labels.npy"
             )
+            wsi_coords_path = os.path.join(features_save_dir, f"{wsi_name}_coords.npy")
 
             if not (
                 os.path.exists(wsi_feature_path)
                 and os.path.exists(wsi_label_path)
                 and os.path.exists(wsi_patch_labels_path)
+                and os.path.exists(wsi_coords_path)
             ):
                 np.save(wsi_feature_path, wsi_feature_array)
                 np.save(wsi_label_path, np.array(wsi_overall_label))
                 np.save(wsi_patch_labels_path, wsi_patch_labels_array)
+                np.save(wsi_coords_path, wsi_coords_array)
             else:
                 print(
                     f"{bcolors.INFO}[INFO]{bcolors.ENDC} Feature files for {wsi_name} already exist, skipping."
@@ -1907,13 +1993,13 @@ def main():
     # Test MIL classifier
     if args.test_mil:
         count_test_tumor_images()
-        if not features_extracted(
+        """if not features_extracted(
             patch_level=args.patch_level, model_type=args.model_type
         ):
             print(
                 f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Features must be extracted before testing MIL classifier."
             )
-            return
+            return"""
         test_mil_classifier(
             feature_level=int(args.patch_level),
             pooling="attention",
