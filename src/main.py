@@ -176,7 +176,7 @@ def download_dataset(remote=False):
     }
 
     # Apply limits for non-remote mode
-    limits = {"train_normal": 39, "train_tumor": 110, "test_images": 30}
+    limits = {"train_normal": 39, "train_tumor": 110, "test_images": 60}
 
     for file_type, target_dir in download_map.items():
         files_to_download = CAMELYON16_FILES[file_type]
@@ -622,7 +622,7 @@ def compare_resnet50_training_strategies(
             scheduler,
             epochs,
             f"src/models/resnet50_{strategy_name}_level{level}",
-            return_metrics=True,  # You may need to add this to train_resnet to return metrics
+            return_metrics=True,
         )
 
         # Test the model
@@ -776,7 +776,7 @@ def train_mil_classifier(
     best_auc = 0.0
     best_model_wts = copy.deepcopy(model.state_dict())
     early_stop_counter = 0
-
+    lambda_entropy = 0.01
     scaler = torch.cuda.amp.GradScaler()  # For mixed precision training
 
     # For consistent naming
@@ -804,9 +804,11 @@ def train_mil_classifier(
 
                 optimizer.zero_grad()
                 with torch.cuda.amp.autocast():
-                    logits, _ = model(bags)
+                    logits, attn_weights = model(bags)
                     loss = criterion(logits.unsqueeze(0), labels)
-
+                    attn_weights_softmax = torch.softmax(attn_weights.squeeze(), dim=0)
+                    entropy = attention_entropy(attn_weights_softmax)
+                    loss = loss + lambda_entropy * entropy
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
@@ -984,6 +986,18 @@ def test_resnet_classifier(
     }
 
 
+def attention_entropy(attn_weights):
+    # attn_weights: (N,) numpy or torch tensor, should sum to 1 (softmax)
+    if isinstance(attn_weights, torch.Tensor):
+        attn_weights = attn_weights + 1e-8  # avoid log(0)
+        entropy = -torch.sum(attn_weights * torch.log(attn_weights))
+        return entropy
+    else:
+        attn_weights = attn_weights + 1e-8
+        entropy = -np.sum(attn_weights * np.log(attn_weights))
+        return entropy
+
+
 def plot_topk_attention(attention_weights, wsi_name, out_dir="attention_heatmaps"):
     sorted_attn = np.sort(attention_weights)[::-1]  # Descending
     cumulative = np.cumsum(sorted_attn)
@@ -1114,6 +1128,38 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
             f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} No test samples found. Check your test feature directory and data preparation."
         )
         return None
+
+    all_val_attns = collect_all_attentions(model, val_loader, device)
+    all_test_attns = collect_all_attentions(model, test_loader, device)
+
+    plt.hist(
+        all_val_attns,
+        bins=50,
+        alpha=0.2,
+        color="lightblue",
+        label="Validation Aggregate Attention",
+        density=True,
+    )
+    plt.hist(
+        all_test_attns,
+        bins=50,
+        alpha=0.2,
+        color="salmon",
+        label="Test Aggregate Attention",
+        density=True,
+    )
+    plt.title("Distribution of attention weights", fontweight="bold")
+    plt.xlabel("Attention Weight")
+    plt.ylabel("Density")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(
+        f"src/models/{model_type}_attention_distribution.png",
+        bbox_inches="tight",
+        dpi=300,
+    )
+    plt.close()
+
     auc_score = roc_auc_score(all_true_labels, all_predictions)
     binary_predictions = [1 if p > 0.5 else 0 for p in all_predictions]
     accuracy = accuracy_score(all_true_labels, binary_predictions)
@@ -1151,12 +1197,44 @@ def test_mil_classifier(feature_level, pooling="attention", model_type="resnet18
     }
 
 
+def collect_all_attentions(model, dataloader, device):
+    model.eval()
+    all_attns = []
+    for bags, labels, slide_names in dataloader:
+        bags = bags[0].to(device)
+        with torch.no_grad():
+            _, attn = model(bags)
+        all_attns.extend(attn.cpu().numpy().flatten())
+    return np.array(all_attns)
+
+
+def plot_attention_histogram(attn_weights, wsi_name):
+    """
+    Plots a histogram of attention weights.
+    """
+    attn_weights = np.array(attn_weights).flatten()
+    plt.figure(figsize=(6, 4))
+    plt.hist(attn_weights, bins=30, alpha=0.7, color="dodgerblue")
+    plt.title(f"Attention distribution - {wsi_name}")
+    plt.xlabel("Attention weight")
+    plt.ylabel("Frequency")
+    plt.grid(True)
+    plt.savefig(
+        f"src/models/{wsi_name}_attention_histogram.png", bbox_inches="tight", dpi=300
+    )
+    plt.close()
+    print(
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Attention histogram saved as {wsi_name}_attention_histogram.png"
+    )
+
+
 def extract_attention_scores(
     model, features, wsi_name, coord_path, out_dir="attention_heatmaps"
 ):
     os.makedirs(out_dir, exist_ok=True)
     _, attention_weights = model(features)  # (N, 1)
     attention_weights = attention_weights.squeeze().cpu().numpy()  # (N,)
+    plot_attention_histogram(attention_weights, wsi_name)
 
     coords = np.load(coord_path)  # e.g., shape (N, 2), with x, y tile locations
 
@@ -1362,11 +1440,8 @@ def extract_patches(patch_size=224, level=3, stride=None, pad=True):
 
 def count_number_tumor_patches(level=3):
     """
-    Count the number of tumor and normal patches in the patch directory for a given level across all slides.
-    Also counts separately for train, val, and test subdirectories.
-
-    Parameters:
-    - level (int): WSI level for patch extraction.
+    Count the number and percentage of slides containing tumor patches in train, val, and test sets.
+    Prints the percentage of slides with at least one tumor patch for each split.
     """
     base_patch_dir = os.path.join(
         os.getcwd(), "data", "camelyon16", "patches", f"level_{level}"
@@ -1379,7 +1454,7 @@ def count_number_tumor_patches(level=3):
         total_tumor = 0
         total_normal = 0
         slides_with_no_tumor = []
-        slides_with_tumor_in_normal = []
+        slides_with_tumor = []
         empty_folders = (
             [
                 d
@@ -1401,42 +1476,44 @@ def count_number_tumor_patches(level=3):
             print(
                 f"{bcolors.ERROR}[ERROR]{bcolors.ENDC} Patch directory '{patch_dir}' does not exist. Please run patch extraction first."
             )
-            split_counts[split] = {"tumor": 0, "normal": 0}
+            split_counts[split] = {"tumor": 0, "normal": 0, "percent_with_tumor": 0.0}
             continue
-        for slide_name in os.listdir(patch_dir):
+        slide_dirs = [
+            d
+            for d in os.listdir(patch_dir)
+            if os.path.isdir(os.path.join(patch_dir, d))
+        ]
+        for slide_name in slide_dirs:
             slide_path = os.path.join(patch_dir, slide_name)
-            if os.path.isdir(slide_path):
-                num_tumor = sum(
-                    1 for f in os.listdir(slide_path) if f.endswith("_tumor.png")
-                )
-                num_normal = sum(
-                    1 for f in os.listdir(slide_path) if f.endswith("_normal.png")
-                )
-                total_tumor += num_tumor
-                total_normal += num_normal
-                if num_tumor == 0:
-                    slides_with_no_tumor.append(slide_name)
-                if slide_name.startswith("normal_") and num_tumor > 0:
-                    slides_with_tumor_in_normal.append(slide_name)
-        split_counts[split] = {"tumor": total_tumor, "normal": total_normal}
+            num_tumor = sum(
+                1 for f in os.listdir(slide_path) if f.endswith("_tumor.png")
+            )
+            num_normal = sum(
+                1 for f in os.listdir(slide_path) if f.endswith("_normal.png")
+            )
+            total_tumor += num_tumor
+            total_normal += num_normal
+            if num_tumor == 0:
+                slides_with_no_tumor.append(slide_name)
+            else:
+                slides_with_tumor.append(slide_name)
+        percent_with_tumor = (
+            100.0 * len(slides_with_tumor) / len(slide_dirs) if slide_dirs else 0.0
+        )
+        split_counts[split] = {
+            "tumor": total_tumor,
+            "normal": total_normal,
+            "percent_with_tumor": percent_with_tumor,
+        }
+        print(
+            f"{bcolors.INFO}[INFO]{bcolors.ENDC} [{split}] {percent_with_tumor:.2f}% of slides contain tumor patches ({len(slides_with_tumor)}/{len(slide_dirs)})"
+        )
         print(
             f"{bcolors.INFO}[INFO]{bcolors.ENDC} [{split}] Total tumor patches at level {level}: {total_tumor}"
         )
         print(
             f"{bcolors.INFO}[INFO]{bcolors.ENDC} [{split}] Total non-tumor patches at level {level}: {total_normal}/{total_tumor + total_normal}"
         )
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} [{split}] Total slides with no tumor patches at level {level}: {len(slides_with_no_tumor)}/{len(os.listdir(patch_dir))}"
-        )
-        print(
-            f"{bcolors.INFO}[INFO]{bcolors.ENDC} [{split}] Slides with no tumor patches: {', '.join(slides_with_no_tumor)}"
-            if slides_with_no_tumor
-            else f"{bcolors.INFO}All slides have tumor patches.{bcolors.ENDC}"
-        )
-        if slides_with_tumor_in_normal:
-            print(
-                f"{bcolors.WARNING}[WARNING]{bcolors.ENDC} [{split}] The following normal slides contain tumor patches: {', '.join(slides_with_tumor_in_normal)}"
-            )
     print(f"{bcolors.INFO}[INFO]{bcolors.ENDC} Summary: {split_counts}")
     count_test_tumor_images()
     return split_counts
@@ -1444,10 +1521,7 @@ def count_number_tumor_patches(level=3):
 
 def count_test_tumor_images():
     """
-    Count the number of test images that have a tumor annotation (i.e., have a corresponding XML file in test/mask/annotations).
-
-    Returns:
-    - int: Number of test images with tumor annotation.
+    Count and print the percentage of test images that have a tumor annotation (i.e., have a corresponding XML file).
     """
     test_img_dir = os.path.join(os.getcwd(), "data", "camelyon16", "test", "img")
     annot_dir = os.path.join(
@@ -1470,8 +1544,11 @@ def count_test_tumor_images():
         xml_path = os.path.join(annot_dir, xml_name)
         if os.path.exists(xml_path):
             annotated_images.append(img)
+    percent_annotated = (
+        100.0 * len(annotated_images) / len(test_images) if test_images else 0.0
+    )
     print(
-        f"{bcolors.INFO}[INFO]{bcolors.ENDC} Number of test images with tumor annotation: {len(annotated_images)}"
+        f"{bcolors.INFO}[INFO]{bcolors.ENDC} {percent_annotated:.2f}% of test slides have tumor annotation ({len(annotated_images)}/{len(test_images)})"
     )
     print(
         f"{bcolors.INFO}[INFO]{bcolors.ENDC} Annotated test images: {', '.join(annotated_images)}"
@@ -1527,7 +1604,7 @@ def extract_features(
             "data",
             "camelyon16",
             "features_coords",
-            f"level_{level}",
+            f"level_{feature_level}",
             model_type,
             split,
         )

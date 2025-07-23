@@ -21,7 +21,9 @@ class MILAttentionPooling(nn.Module):
 
 
 class MILAttentionPooling(nn.Module):
-    """Attention-based pooling as in Ilse et al. (ABMIL)"""
+    """
+    Attention-based pooling as in Ilse et al. (ABMIL)
+    """
 
     def __init__(self, in_dim, attn_dim=128):
         super().__init__()
@@ -48,6 +50,8 @@ class GatedAttentionPooling(nn.Module):
         # Gated mechanism: tanh(Vx) * sigmoid(Ux)
         A = torch.tanh(self.V(x)) * torch.sigmoid(self.U(x))
         A = self.attn(A)
+        A = A - A.max(dim=0, keepdim=True)[0]
+        A = self.dropout(A)
         A = torch.softmax(A, dim=0)
         M = torch.sum(A * x, dim=0)
         return M, A
@@ -67,11 +71,20 @@ class MILClassifier(nn.Module):
             self.aggregator = lambda x: (x.max(dim=0)[0], None)
         else:
             raise ValueError("Unknown pooling: choose from 'attention', 'mean', 'max'")
-        self.classifier = nn.Sequential(
+        """self.classifier = nn.Sequential(
             nn.Linear(feature_dim, 128),
             nn.ReLU(),
-            nn.LayerNorm(128),  # added layer norm, gotta try
+            # nn.LayerNorm(128),  # added layer norm, gotta try
             nn.Dropout(p=0.5),
+            nn.Linear(128, num_classes),
+        )"""
+        self.classifier = nn.Sequential(
+            nn.Linear(feature_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(p=0.3),
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            nn.Dropout(p=0.3),
             nn.Linear(128, num_classes),
         )
 
@@ -92,7 +105,3 @@ class MILClassifier(nn.Module):
     def softmax(self, logits):
         exp_logits = np.exp(logits - np.max(logits, axis=1, keepdims=True))
         return exp_logits / np.sum(exp_logits, axis=1, keepdims=True)
-
-    def uncertainty_estimation(self, logits):
-        # TODOOOOOOOOOO
-        pass
