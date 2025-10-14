@@ -3,10 +3,6 @@ import numpy as np
 from PIL import Image, ImageDraw
 from lxml import etree
 import matplotlib.pyplot as plt
-
-"""os.add_dll_directory(
-    r"C:\Program Files\OpenSlide\openslide-bin-4.0.0.8-windows-x64\bin"
-)"""
 from openslide import OpenSlide
 
 
@@ -173,3 +169,4 @@ if __name__ == "__main__":
         x=1000,
         y=1500,
     )
+
